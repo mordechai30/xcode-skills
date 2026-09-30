@@ -1,0 +1,7 @@
+interface:
+  display_name: "Xcode Universal Debug"
+  short_description: "Build, run, and debug macOS Xcode apps"
+  default_prompt: "Use $xcode-universal-debug to build and run this macOS Xcode app."
+
+policy:
+  allow_implicit_invocation: true

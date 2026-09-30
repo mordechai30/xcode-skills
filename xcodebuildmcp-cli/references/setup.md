@@ -1,0 +1,86 @@
+# Setup
+
+Source: https://www.mobilebuildmcp.com/docs/setup
+
+You've installed MobileBuildMCP. Here's how to wire it into your editor, configure defaults for your project, and run your first build.
+
+## 1. Add MobileBuildMCP to your editor
+
+Your agent connects to MobileBuildMCP over MCP. Pick your editor and paste its config block:
+
+*   **[Claude Code](https://www.mobilebuildmcp.com/docs/clients#claude-code)**: one command
+*   **[Cursor](https://www.mobilebuildmcp.com/docs/clients#cursor)**: project-scoped `.cursor/mcp.json`
+*   **[Codex CLI](https://www.mobilebuildmcp.com/docs/clients#codex-cli)**: `~/.codex/config.toml`
+*   **[Claude Desktop](https://www.mobilebuildmcp.com/docs/clients#claude-desktop)**, **[VS Code](https://www.mobilebuildmcp.com/docs/clients#vs-code)**, **[Windsurf](https://www.mobilebuildmcp.com/docs/clients#windsurf)**, **[Kiro](https://www.mobilebuildmcp.com/docs/clients#kiro)**, **[Trae](https://www.mobilebuildmcp.com/docs/clients#trae)**
+*   **[Xcode (Codex Agent)](https://www.mobilebuildmcp.com/docs/clients#xcode-codex-agent)** or **[Xcode (Claude Code Agent)](https://www.mobilebuildmcp.com/docs/clients#xcode-claude-code-agent)**: requires Xcode 26.3+
+
+See the full list with copy-paste snippets on the [MCP Clients](https://www.mobilebuildmcp.com/docs/clients) page.
+
+Once the server is connected, your agent can list tools. With the default configuration it will see the simulator toolset.
+
+## 2. Run the setup wizard
+
+Run this in your project root. It creates or updates `.mobilebuildmcp/config.yaml` with everything your agent needs to stop asking for the basics on every call:
+
+`mobilebuildmcp setup`
+
+The wizard walks you through:
+
+*   **Target platforms**: which Apple platforms you build for (macOS, iOS, tvOS, watchOS, visionOS). Selecting at least one platform shapes the rest of the wizard, including which workflows are recommended and whether you need to pick a simulator.
+*   **Workflows**: which tool groups to enable (simulator, device, macOS, debugging, UI automation, etc.)
+*   **Project defaults**: your workspace or project path, scheme, configuration
+*   **Simulator defaults**: preferred simulator by name or UDID
+*   **Debug options**: whether to enable debug logging and the doctor tool
+
+Non-interactive mode is available for CI and scripts (`mobilebuildmcp setup --help`).
+
+### Recommended vs default workflows
+
+The wizard splits workflows into two groups based on your target platforms:
+
+*   **Recommended**: workflows whose `targetPlatforms` overlap your selection. The wizard pre-selects only the conservative defaults: `simulator` for any simulator platform (iOS, tvOS, watchOS, visionOS) and `macos` when macOS is selected. Other recommended workflows (for example `device`, `debugging`, `ui-automation`, `swift-package`) are listed alongside but left unchecked, so you opt in to what you need.
+*   **Additional**: every other workflow. These are still selectable, just not flagged as a fit for your platforms.
+
+Target platforms are guidance for setup only. They do not gate tool exposure at runtime: any workflow you enable still advertises its tools through MCP regardless of platform metadata. Predicates and the `availability` field handle runtime gating, see [Workflows](https://www.mobilebuildmcp.com/docs/workflows) and [MCP Server Mode → Workflow selection](https://www.mobilebuildmcp.com/docs/mcp-mode#workflow-selection) for the full picture.
+
+No MCP client context? No problem.
+
+If your client doesn't read `.mobilebuildmcp/config.yaml` from the workspace (some don't), you can export an env-based config block with `mobilebuildmcp setup --format mcp-json` and paste it into your MCP client config.
+
+## 3. (Optional) Install an agent skill
+
+If you're using Codex, Cursor or another client, installing the agent skill helps your agent use MobileBuildMCP effectively without burning tokens rediscovering conventions:
+
+`mobilebuildmcp init`
+
+The installer auto-detects your client and drops the right skill (CLI or MCP) in the right directory. See [Agent Skills](https://www.mobilebuildmcp.com/docs/skills) for flags and supported clients.
+
+## 4. First build
+
+Open your editor, point your agent at the project, and give it a normal instruction:
+
+```
+You
+Build and run my app on an iPhone 17 simulator and show me any runtime errors.
+
+Agent
+I'll start by discovering your project.
+→ discover_projs()
+→ list_schemes(projectPath: "./MyApp.xcodeproj")
+→ session_set_defaults(projectPath: "./MyApp.xcodeproj", scheme: "MyApp", simulatorName: "iPhone 17")
+→ build_run_sim()
+→ (logs are captured to the path returned above)
+```
+
+After the first `session_set_defaults` call, every subsequent tool call reuses those values, no more repeating project/scheme/simulator on each turn. See [Session Defaults](https://www.mobilebuildmcp.com/docs/session-defaults) for profiles, persistence, and how the agent manages them.
+
+## 5. Common next steps
+
+*   **Enable more workflows** when you need them. `device` for physical hardware, `debugging` for LLDB, `ui-automation` for tap/swipe/screenshot, see [Workflows](https://www.mobilebuildmcp.com/docs/workflows) for the full list.
+*   **Expand [Tools Reference](https://www.mobilebuildmcp.com/docs/tools)** to browse every tool by name and workflow.
+*   **Explore the [CLI](https://www.mobilebuildmcp.com/docs/cli)** if you want direct terminal access, scripting, or CI usage.
+*   **Monorepo?** Use [named profiles](https://www.mobilebuildmcp.com/docs/session-defaults#named-profiles) to keep separate defaults per sub-project.
+
+## Troubleshooting
+
+If the server doesn't start or tools don't appear, see [Troubleshooting](https://www.mobilebuildmcp.com/docs/troubleshooting). Always paste `mobilebuildmcp doctor` output when filing an issue.

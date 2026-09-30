@@ -1,0 +1,57 @@
+# Agent Skills
+
+Source: https://www.mobilebuildmcp.com/docs/skills
+
+Prime your agent with MobileBuildMCP's conventions so it stops guessing flag names.
+
+MobileBuildMCP ships with two optional [agent skills](https://agentskills.io/home):
+
+*   **MCP Skill**: how to call MCP tools. Optional when you're already using the MCP server, because Claude Code already receives equivalent guidance via server instructions.
+*   **CLI Skill**: how to navigate the CLI. Recommended when your agent drives the terminal.
+
+## Install
+
+`mobilebuildmcp init`
+
+This auto-detects installed AI clients (Claude Code, Cursor, Codex) and installs the CLI skill into the right directory for each.
+
+## Options
+
+| Flag | Description |
+| --- | --- |
+| `--skill cli` | Install the CLI skill (default). |
+| `--skill mcp` | Install the MCP skill. |
+| `--client claude` | Install to Claude only. Other targets: `cursor`, `codex`. |
+| `--dest /path/to/dir` | Install to a custom directory. |
+| `--force` | Overwrite an existing skill. |
+| `--remove-conflict` | Auto-remove a conflicting variant (MCP vs CLI). |
+| `--uninstall` | Remove an installed skill. |
+| `--print` | Print skill content to stdout instead of installing. |
+
+Claude Code + MCP skill
+
+When installing `--skill mcp` in auto-detect mode, Claude Code targets are skipped: Claude already receives MCP guidance through server instructions. Pass `--client claude` explicitly to force install.
+
+## Unsupported clients
+
+For clients without a skills directory, print the skill and pipe it where you need it:
+
+`mobilebuildmcp init --print --skill mcp > my-mcp-skill.md`
+
+Then paste it into your client's instructions area, or feed it as system prompt context.
+
+## Why skills
+
+The skills prime the agent with:
+
+*   Tool names and their CLI equivalents
+*   Session-defaults workflow (`session_set_defaults` first, then minimal calls)
+*   Build-and-run as the preferred one-shot instead of separate build/install/launch
+*   Structured next-step hints after each tool call
+
+Agents without the skill still work; they just spend more tokens rediscovering conventions.
+
+## Related
+
+*   [agentskills.io](https://agentskills.io/home)
+*   The upstream skill sources live in [skills/](https://github.com/getsentry/MobileBuildMCP/tree/main/skills).

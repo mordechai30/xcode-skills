@@ -1,0 +1,240 @@
+# CLI
+
+Source: https://www.mobilebuildmcp.com/docs/cli
+
+Direct terminal access to every MobileBuildMCP tool. Use it from scripts, CI, manual checks, or from coding agents that have shell access and want to compose, pipe, or script tool calls. Long-running operations stream live progress to stdout so callers get immediate feedback instead of blocking until the whole operation finishes.
+
+## Synopsis
+
+`mobilebuildmcp <workflow> <tool> [options]`
+
+Each tool takes `--help` for flag details:
+
+`mobilebuildmcp simulator build --help`
+
+## Top-level commands
+
+| Command | What it does |
+| --- | --- |
+| `mcp` | Start the MCP server on stdio. Used by MCP clients. |
+| `tools` | List every tool, grouped by workflow. |
+| `setup` | Interactive wizard to create or update `.mobilebuildmcp/config.yaml`. |
+| `init` | Install the MCP or CLI agent skill (Claude Code, Cursor, Codex). |
+| `upgrade` | Self-update the CLI using the package manager it was installed with. |
+| `purge` | Report and clean MobileBuildMCP-managed workspace storage. See [Storage Management](https://www.mobilebuildmcp.com/docs/storage-management). |
+| `simulator` | Build, install, launch, test, log capture on simulators. |
+| `device` | Install, launch, test on physical Apple devices. |
+| `macos` | Build, run, test macOS targets. |
+| `swift-package` | Build, test, clean Swift packages. |
+| `debugging` | Attach LLDB, set breakpoints, inspect stacks/variables. |
+| `ui-automation` | Tap, swipe, type text, gesture, screenshot. |
+| `doctor` | Environment and capability report. Include its output on every issue. |
+| `daemon` | Inspect, start, stop the per-workspace daemon. |
+
+Run `mobilebuildmcp --help` for the full list.
+
+## Passing arguments
+
+```
+# As flags
+mobilebuildmcp simulator build --scheme MyApp --project-path ./MyApp.xcodeproj
+
+# As JSON (useful for complex nested options)
+mobilebuildmcp simulator build --json '{"scheme":"MyApp","projectPath":"./MyApp.xcodeproj"}'
+
+# Output format
+mobilebuildmcp simulator list --output json
+
+# File artifact layout in text/raw output
+mobilebuildmcp simulator build --file-path-render-style tree
+```
+
+`--file-path-render-style list|tree` overrides the text rendering style for file artifacts on one invocation. The default CLI text style is `list`; MCP text defaults to `tree`. JSON and JSONL output are unaffected.
+
+## Session defaults auto-fill
+
+If your project has `.mobilebuildmcp/config.yaml` with `sessionDefaults` set, the CLI fills matching flags automatically:
+
+```
+# .mobilebuildmcp/config.yaml
+schemaVersion: 1
+sessionDefaults:
+  scheme: MyApp
+  projectPath: ./MyApp.xcodeproj
+  simulatorName: iPhone 17 Pro
+```
+
+```
+# Before: flags on every invocation
+mobilebuildmcp simulator build --scheme MyApp --project-path ./MyApp.xcodeproj
+
+# Now: flags come from session defaults
+mobilebuildmcp simulator build
+```
+
+This also works with named profiles for monorepos. Use `--profile <name>` to override the active profile for a single call. See [Session Defaults → Named profiles](https://www.mobilebuildmcp.com/docs/session-defaults#named-profiles).
+
+## Common recipes
+
+### Build for an iOS simulator
+
+```
+mobilebuildmcp simulator build \
+  --scheme MyApp \
+  --project-path ./MyApp.xcodeproj \
+  --simulator-name "iPhone 17 Pro"
+```
+
+### Build and run in one step
+
+```
+mobilebuildmcp simulator build-and-run \
+  --scheme MyApp \
+  --project-path ./MyApp.xcodeproj
+```
+
+Pass launch arguments with `launchArgs` on build-and-run tools (`simulator build-and-run`, `device build-and-run`, `macos build-and-run`) and launch-only tools (`simulator launch-app`, `device launch`, `macos launch`). Keep `extraArgs` for `xcodebuild` flags and build settings overrides; those values are not passed to the app process.
+
+```
+mobilebuildmcp simulator build-and-run --json '{
+  "scheme": "MyApp",
+  "projectPath": "./MyApp.xcodeproj",
+  "simulatorName": "iPhone 17 Pro",
+  "launchArgs": ["--mock-weather-api"]
+}'
+```
+
+### Build and run on a physical device with runtime args
+
+```
+mobilebuildmcp device build-and-run --json '{
+  "scheme": "MyApp",
+  "projectPath": "./MyApp.xcodeproj",
+  "deviceId": "<DEVICE_UDID>",
+  "launchArgs": ["--uitesting"]
+}'
+```
+
+### Build and run on macOS with runtime args
+
+```
+mobilebuildmcp macos build-and-run --json '{
+  "scheme": "MyApp",
+  "projectPath": "./MyApp.xcodeproj",
+  "launchArgs": ["--uitesting"]
+}'
+```
+
+### Launch an installed simulator app with runtime args
+
+```
+mobilebuildmcp simulator launch-app --json '{
+  "simulatorId": "<SIMULATOR_UDID>",
+  "bundleId": "com.example.MyApp",
+  "launchArgs": ["--uitesting"]
+}'
+```
+
+### Run XCTests with pre-resolved test cases and live progress
+
+```
+mobilebuildmcp simulator test --json '{
+  "workspacePath": "./MyApp.xcworkspace",
+  "scheme": "MyApp",
+  "simulatorName": "iPhone 17 Pro",
+  "progress": true,
+  "extraArgs": ["-only-testing:MyAppTests"]
+}'
+```
+
+### Record a simulator video
+
+Useful for bug reports, demos, and agent-run UI flows. Video capture runs through the daemon as a stateful session.
+
+```
+mobilebuildmcp simulator record-video \
+  --simulator-id <UDID> \
+  --output-path ./session.mp4
+```
+
+## Streaming output and live progress
+
+Long-running tool calls (builds, tests, video recording, debugging sessions) emit progress in real time. The calling shell, script, or agent sees continuous activity instead of waiting for the whole operation to finish. Even between semantic milestones, raw subprocess stdout and stderr stream as the underlying tool emits them, which acts as a continuous liveness signal during long operations.
+
+What you get depends on `--output`:
+
+*   **`text`** (default): human-readable progress lines stream to stdout as they happen. Build phases, test pass / fail, raw subprocess output, and runtime status messages all appear live.
+*   **`jsonl`**: one NDJSON event per fragment. Same content as `text` mode in a structured shape that agents and scripts can parse line by line. Each event has a `kind` (for example `build`, `test`, `transcript`, `infrastructure`) and a `fragment` field describing what happened.
+*   **`json`**: does not stream. The CLI waits for the tool to reach its terminal state, then emits a single structured final result.
+
+For agents driving long operations through the shell, `jsonl` is usually the right choice: the calling agent can react to events as they arrive (surface a test failure the moment it appears, abort a build that has gone past a budget, forward live progress to the user). `text` is best for humans and for agents that only need to confirm the call is alive while it runs.
+
+See [Output Formats](https://www.mobilebuildmcp.com/docs/output-formats) for the envelope and event shapes.
+
+## Keeping the CLI up to date
+
+Run `mobilebuildmcp upgrade` to check for a newer version and install it in place. No need to remember whether you installed via Homebrew or npm, the command figures that out and runs the right upgrade for you.
+
+```
+mobilebuildmcp upgrade           # show current vs latest, release notes, and confirm
+mobilebuildmcp upgrade --check   # just tell me if there's an update, don't prompt
+mobilebuildmcp upgrade --yes     # upgrade without asking
+```
+
+If you installed via `npx`, the command will tell you how to pick up the latest version the next time you invoke it (npx installs are ephemeral, so there's nothing to upgrade in place).
+
+In CI or other non-interactive contexts, pass `--check` or `--yes`. Without either flag in a non-TTY context, the command exits non-zero instead of hanging on a prompt.
+
+## Per-workspace daemon
+
+Some MobileBuildMCP tools need to keep state between commands (for example log capture, video recording, LLDB debugging, and background Swift Package runs). To do that, MobileBuildMCP uses a background process.
+
+MobileBuildMCP auto-starts a small scoped background process (a daemon) the first time one of those tools runs. That daemon survives between CLI invocations, so follow-up commands can continue the same stateful session.
+
+Lifecycle and scope:
+
+*   **Auto-start**: starts on the first stateful tool call. No manual setup required.
+*   **Auto-shutdown**: stops after 10 minutes of idle time.
+*   **Workspace scoping**: each daemon is scoped per workspace. If `.mobilebuildmcp/config.yaml` exists, MobileBuildMCP uses that file's project location to identify the workspace. If not, it uses your current directory.
+
+### Daemon commands
+
+```
+mobilebuildmcp daemon status
+mobilebuildmcp daemon start
+mobilebuildmcp daemon stop
+mobilebuildmcp daemon restart
+mobilebuildmcp daemon list
+mobilebuildmcp daemon list --json
+mobilebuildmcp daemon logs
+```
+
+Reference details:
+
+*   **Socket path**: `~/.mobilebuildmcp/daemons/<workspace-key>/daemon.sock`
+*   **Workspace identity key**: `<workspace-key>` is derived from the workspace root path.
+
+### Troubleshooting the daemon
+
+```
+# See logs in the foreground
+mobilebuildmcp daemon start --foreground
+
+# Extend startup timeout
+export MOBILEBUILDMCP_STARTUP_TIMEOUT_MS=10000
+
+# Socket permission issues
+chmod 700 ~/.mobilebuildmcp
+chmod -R 700 ~/.mobilebuildmcp/daemons
+```
+
+## CLI vs MCP mode
+
+|  | CLI | MCP (`mobilebuildmcp mcp`) |
+| --- | --- | --- |
+| Invocation | Direct terminal | MCP client over stdio |
+| Session state | Stateless direct + daemon for stateful tools | In-process |
+| Use case | Scripts, CI, manual checks, agents composing tool calls via shell | MCP clients and agents |
+| Configuration | Same `config.yaml` | Same `config.yaml` |
+
+Both share the same tool implementations.

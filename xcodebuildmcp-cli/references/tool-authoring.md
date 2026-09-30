@@ -1,0 +1,403 @@
+# Tool Authoring
+
+Source: https://www.mobilebuildmcp.com/docs/tool-authoring
+
+Add, modify, or remove a tool end to end.
+
+A tool change usually touches more than one file. Keep the implementation, manifest metadata, structured output schema, fixtures, and generated docs aligned in the same change.
+
+If you are new to the architecture, this page leans on a few terms that are defined in full in [Core terms](https://www.mobilebuildmcp.com/docs/architecture#core-terms). The short version: a **tool** is one user-visible action exposed through MCP and CLI; the **handler** is the function that performs the work and writes its outcome onto the call context; the **manifest** is the YAML file that declares the tool's metadata (names, schema reference, exposure rules) without containing the implementation; **fragments** are progress events the handler emits while running; the **structured output** is the canonical JSON result the handler sets at the end of the call.
+
+## Mental model
+
+| Layer | Location | What must stay true |
+| --- | --- | --- |
+| Implementation | `src/mcp/tools/<workflow>/<tool>.ts` | Exports `schema` and `handler`, validates input with Zod, executes the work, and sets `ctx.structuredOutput`. |
+| Tool manifest | `manifests/tools/<tool>.yaml` | Defines tool ID, module path, MCP and CLI names, description, annotations, availability, predicates, routing, next-step templates, and output schema metadata. |
+| Workflow manifest | `manifests/workflows/<workflow>.yaml` | References the tool ID so the tool appears in one or more workflows. |
+| Output schema | `schemas/structured-output/<schema>/<version>.schema.json` | Validates the structured JSON response returned through MCP `structuredContent` and CLI JSON output. |
+| Fixtures | `src/snapshot-tests/__fixtures__/{mcp,cli,json}/...` | Lock the MCP text, CLI text, and JSON response contracts. |
+
+The final structured result is the canonical output. Rendered text is derived from that result, fragments, and runtime-specific rendering rules. See [Tool Lifecycle](https://www.mobilebuildmcp.com/docs/architecture-tool-lifecycle#streaming-vs-non-streaming-tools) for the runtime model and [Output Formats](https://www.mobilebuildmcp.com/docs/output-formats) for the response shape.
+
+## Adding a new tool
+
+### 1. Pick streaming or non-streaming
+
+| Tool shape | Use it when | Examples | Rule |
+| --- | --- | --- | --- |
+| Non-streaming | The tool computes one result and returns. | Listing, discovery, metadata, cleanup, session defaults. | Do not emit fragments. Set `ctx.structuredOutput` once. |
+| Streaming | The user benefits from live progress while the tool runs. | Build, build-and-run, test, long-running SwiftPM commands. | Emit progress fragments, then set the final structured result. |
+
+Use the simpler non-streaming path unless the user needs live progress. Do not add a streaming path for a short query just because another tool uses one.
+
+### 2. Create the implementation
+
+Create the implementation under `src/mcp/tools/<workflow>/<tool>.ts`. A normal tool exports a Zod schema shape and a handler created with `createTypedTool(...)`.
+
+Minimal non-streaming shape:
+
+ts Copy
+
+```
+import * as z from 'zod';
+import type { NonStreamingExecutor } from '../../../types/tool-execution.ts';
+import type { CommandExecutor } from '../../../utils/execution/index.ts';
+import { getDefaultCommandExecutor } from '../../../utils/execution/index.ts';
+import { createTypedTool, getHandlerContext } from '../../../utils/typed-tool-factory.ts';
+
+const listWidgetsSchema = z.object({
+  enabled: z.boolean().optional(),
+});
+
+type ListWidgetsParams = z.infer<typeof listWidgetsSchema>;
+type WidgetListResult = {
+  kind: 'widget-list';
+  didError: boolean;
+  error: string | null;
+  widgets: Array<{ name: string }>;
+};
+
+export function createListWidgetsExecutor(
+  executor: CommandExecutor,
+): NonStreamingExecutor<ListWidgetsParams, WidgetListResult> {
+  return async () => {
+    const response = await executor(['xcrun', 'widgetctl', 'list', '--json'], 'List Widgets', false);
+
+    if (!response.success) {
+      return { kind: 'widget-list', didError: true, error: response.error ?? 'List failed', widgets: [] };
+    }
+
+    return { kind: 'widget-list', didError: false, error: null, widgets: JSON.parse(response.output) };
+  };
+}
+
+export async function list_widgetsLogic(
+  params: ListWidgetsParams,
+  executor: CommandExecutor,
+): Promise<void> {
+  const ctx = getHandlerContext();
+  const result = await createListWidgetsExecutor(executor)(params);
+
+  ctx.structuredOutput = {
+    result,
+    schema: 'mobilebuildmcp.output.widget-list',
+    schemaVersion: '1',
+  };
+}
+
+export const schema = listWidgetsSchema.shape;
+export const handler = createTypedTool(listWidgetsSchema, list_widgetsLogic, getDefaultCommandExecutor);
+```
+
+For session-default-aware tools, follow the existing `createSessionAwareTool(...)` pattern used by build and test tools. The public schema can hide parameters that session defaults provide, while the internal schema still validates the fully merged argument set.
+
+### 3. Define or reuse the domain result
+
+Prefer an existing domain result when it fits. Common schema IDs include:
+
+| Result | Schema ID |
+| --- | --- |
+| Build result | `mobilebuildmcp.output.build-result` |
+| Build and run result | `mobilebuildmcp.output.build-run-result` |
+| Test result | `mobilebuildmcp.output.test-result` |
+| Simulator list | `mobilebuildmcp.output.simulator-list` |
+| App path | `mobilebuildmcp.output.app-path` |
+| UI action | `mobilebuildmcp.output.ui-action-result` |
+
+Create a new schema only when no existing schema accurately describes the payload. The schema validates the full structured response, not only the `data` object. Published schema versions use integer strings such as `"1"` and `"2"`.
+
+### 4. Create the tool manifest
+
+Create `manifests/tools/<tool_id>.yaml`. The `id` must match the filename without `.yaml`, and `module` points to the implementation path under `src/` without an extension.
+
+```
+id: list_widgets
+module: mcp/tools/simulator/list_widgets
+names:
+  mcp: list_widgets
+  cli: list-widgets
+description: List available widgets.
+availability:
+  mcp: true
+  cli: true
+annotations:
+  title: List Widgets
+  readOnlyHint: true
+  destructiveHint: false
+  openWorldHint: false
+outputSchema:
+  schema: mobilebuildmcp.output.widget-list
+  version: "1"
+```
+
+| Field | Required | Notes |
+| --- | --- | --- |
+| `id` | Yes | Unique tool ID, usually `snake_case`, matching the filename. |
+| `module` | Yes | Package-relative module path, for example `mcp/tools/simulator/list_sims`. |
+| `names.mcp` | Yes | MCP protocol name. This is what agents call. |
+| `names.cli` | No | CLI command name. If omitted, the MCP name is converted to kebab-case. |
+| `description` | No | Shown in generated tool docs and catalogs. |
+| `annotations` | No | MCP hints such as `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`. |
+| `outputSchema` | No | Required when the tool sets `ctx.structuredOutput`. Advertised to MCP clients per the [MCP output schema spec](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#output-schema). Must match the emitted schema and version. |
+| `availability` | No | Controls MCP and CLI exposure. Defaults to available. |
+| `predicates` | No | Visibility gates such as `debugEnabled` or `hideWhenXcodeAgentMode`. |
+| `routing.stateful` | No | Set to `true` for CLI tools that must route through the daemon. |
+| `nextSteps` | No | Stable follow-up templates. Use `when` for lifecycle status, optional `condition` for a handler-activated branch, and `ctx.nextStepParams` for runtime values. |
+
+#### Conditional next steps
+
+Keep finite, stable follow-up branches in the manifest. A template can require both a lifecycle status and a condition key:
+
+```
+nextSteps:
+  - label: Inspect a listed widget
+    toolId: inspect_widget
+    when: success
+    condition: widgets_available
+```
+
+Activate the condition only when the handler's result supports that follow-up. Supply any values discovered at runtime separately:
+
+ts Copy
+
+```
+if (result.widgets.length > 0) {
+  ctx.nextStepConditionKeys = ['widgets_available'];
+  ctx.nextStepParams = {
+    inspect_widget: { name: result.widgets[0].name },
+  };
+}
+```
+
+The runtime includes the template only when `when` matches the call status and `condition` appears in `ctx.nextStepConditionKeys`. Condition keys must use lowercase `snake_case`, are internal to next-step selection, and are not returned to the caller. A template with no `condition` only uses its `when` rule.
+
+Use this pattern when the set of possible follow-ups is known while authoring the tool. Use `ctx.nextSteps` only when live result data determines the number, target tool, label, ordering, or parameter structure of the suggestions. For example, follow-ups derived from a live UI hierarchy remain dynamic because they may contain different actions and ephemeral element references on every call.
+
+### 5. Register the tool in a workflow
+
+Add the tool ID to one or more workflow manifests:
+
+```
+id: simulator
+tools:
+  - list_sims
+  - list_widgets
+```
+
+A tool can appear in multiple workflows, but it should have one tool manifest. Workflow selection and predicates decide which runtimes expose it.
+
+### 6. Validate docs and schemas
+
+If you add, remove, or change tool metadata, run:
+
+`npm run docs:check`
+
+If the tool produces structured output, also run:
+
+```
+npm run test:schema-fixtures
+npx vitest run src/core/__tests__/structured-output-schema.test.ts
+```
+
+### 7. Add fixtures
+
+Add or update representative fixtures under:
+
+| Fixture tree | Validates |
+| --- | --- |
+| `src/snapshot-tests/__fixtures__/mcp/` | MCP text output. |
+| `src/snapshot-tests/__fixtures__/cli/` | CLI text output. |
+| `src/snapshot-tests/__fixtures__/json/` | Structured JSON response. |
+
+Regenerate snapshots only after you understand the behavior change:
+
+`npm run test:snapshots:update 2>&1 | tee /tmp/snapshot-update.txt`
+
+Fixtures are contracts
+
+Do not update fixtures just to make a failing test pass. If a fixture changes unexpectedly, assume the implementation is wrong until you prove the fixture should change.
+
+## Streaming tools
+
+A streaming tool emits live progress fragments while it runs, then sets one canonical `ctx.structuredOutput` at the end. The mechanism is `ctx.emit(fragment)`, where `fragment` is one of the kinds in the closed `AnyFragment` union defined in `src/types/domain-fragments.ts`:
+
+| Fragment family | `kind` value(s) | Used by |
+| --- | --- | --- |
+| Transcript | `'transcript'` | Any subprocess that wants raw stdout/stderr replay. |
+| Build-like | `'build-result'`, `'build-run-result'`, `'test-result'` | The xcodebuild pipeline (build, build-run, and test tools). |
+| Runtime status | See `src/types/runtime-status.ts`. | Runtime infrastructure messages. |
+
+`ctx.emit` is typed against this union. If your tool needs a streaming shape that does not fit any existing fragment, you have to add it: define the new fragment interfaces in `src/types/domain-fragments.ts`, extend `AnyFragment`, and update the renderer to format the new shape. That is a real architectural change, not a per-tool concern. Reach for it only after confirming an existing fragment family does not fit.
+
+Three patterns cover every streaming tool currently in the codebase. Pick the one that matches what your tool is doing.
+
+### Pattern 1: Raw subprocess transcript (CLI raw mode only)
+
+When the value of a streaming tool is replaying a subprocess's stdout/stderr in real time (for example, `simctl log stream`) and nothing more, the standard executor (`getDefaultCommandExecutor()`) emits `TranscriptFragment` events automatically via async-local storage. The handler does not call `ctx.emit` itself. Structurally it looks identical to a non-streaming handler:
+
+ts Copy
+
+```
+import * as z from 'zod';
+import type { CommandExecutor } from '../../../utils/execution/index.ts';
+import { getDefaultCommandExecutor } from '../../../utils/execution/index.ts';
+import { createTypedTool, getHandlerContext } from '../../../utils/typed-tool-factory.ts';
+
+const watchLogsSchema = z.object({
+  simulatorId: z.string(),
+});
+
+type WatchLogsParams = z.infer<typeof watchLogsSchema>;
+type WatchLogsResult = {
+  kind: 'log-stream';
+  didError: boolean;
+  error: string | null;
+  exitCode: number | null;
+};
+
+export async function watch_logsLogic(
+  params: WatchLogsParams,
+  executor: CommandExecutor,
+): Promise<void> {
+  const ctx = getHandlerContext();
+  const response = await executor(
+    ['xcrun', 'simctl', 'spawn', params.simulatorId, 'log', 'stream'],
+    'Watch Simulator Logs',
+    false,
+  );
+
+  ctx.structuredOutput = {
+    result: {
+      kind: 'log-stream',
+      didError: !response.success,
+      error: response.error ?? null,
+      exitCode: response.exitCode ?? null,
+    },
+    schema: 'mobilebuildmcp.output.log-stream',
+    schemaVersion: '1',
+  };
+}
+
+export const schema = watchLogsSchema.shape;
+export const handler = createTypedTool(watchLogsSchema, watch_logsLogic, getDefaultCommandExecutor);
+```
+
+The catch: the transcript-emitter context is **only registered by CLI `--output raw` mode** (`src/cli/register-tool-commands.ts`). In CLI text, JSON, JSONL, and MCP modes, the executor's transcript emissions are silently dropped. Use this pattern when raw subprocess replay in raw mode is genuinely all the tool needs to do — typically debugging-oriented tools.
+
+### Pattern 2: Typed domain fragments
+
+When the user benefits from structured progress events that work across all output modes — phase markers, warnings, test failures — the handler emits existing fragment shapes directly through `ctx.emit`:
+
+ts Copy
+
+```
+ctx.emit({
+  kind: 'test-result',
+  fragment: 'test-failure',
+  operation: 'TEST',
+  test: 'MyAppTests.testLoginFlow',
+  message: 'Expected status 200, got 401',
+  durationMs: 1240,
+});
+```
+
+Each `kind` has a fixed set of `fragment` discriminators in `src/types/domain-fragments.ts`. The render layer already knows how to format each shape for MCP text, CLI text, and JSONL.
+
+Streaming output from a still-running subprocess is a separate concern: the standard `executor()` awaits the subprocess to completion before returning, so it does not expose live output to the handler. To read stdout/stderr line-by-line as it arrives, use `getDefaultInteractiveSpawner()` from `src/utils/execution/`. The spawner returns an `InteractiveProcess` whose `process.stdout` / `process.stderr` streams the handler can attach to and emit fragments from as output is parsed.
+
+### Pattern 3: The xcodebuild pipeline (build, build-run, and test tools only)
+
+Tools that wrap `xcrun xcodebuild` — `build_sim`, `build_device`, `build_macos`, the `build_run_*` family, `test_sim`, `test_device`, `test_macos`, and the Swift Package equivalents — go through a shared pipeline in `src/utils/xcodebuild-pipeline.ts`. The pipeline spawns `xcodebuild`, parses its stdout into typed `BuildStageFragment`, `CompilerDiagnosticFragment`, and `BuildSummaryFragment` events, captures the full build log to disk, and aggregates the run into a canonical domain result. Each tool plugs into it through five helpers:
+
+ts Copy
+
+```
+export async function build_widgetLogic(
+  params: BuildWidgetParams,
+  executor: CommandExecutor,
+): Promise<void> {
+  const ctx = getHandlerContext();
+  const prepared = await prepareBuildWidgetExecution(params, executor);
+
+  ctx.emit(createBuildInvocationFragment('build-result', 'BUILD', prepared.invocationRequest));
+
+  const executionContext = createStreamingExecutionContext(ctx);
+  const executeBuildWidget = createBuildWidgetExecutor(executor, prepared);
+  const result = await executeBuildWidget(params, executionContext);
+
+  setXcodebuildStructuredOutput(ctx, 'build-result', result);
+}
+```
+
+| Helper | What it does |
+| --- | --- |
+| `prepareBuild<Tool>Execution(params, executor)` | Tool-specific. Resolves user params (workspace, scheme, configuration, target) into a concrete `BuildInvocationRequest` plus any preflight side-effects such as resolving a simulator UUID or derived-data path. |
+| `createBuildInvocationFragment(kind, op, request)` | Returns the leading `BuildInvocationFragment` that announces what is about to run. Emit it once before the executor starts so the renderer has full invocation context for the rest of the stream. |
+| `createStreamingExecutionContext(ctx)` | Adapts the handler's `ctx.emit` into the callback shape the pipeline's executor expects. The pipeline pushes parsed fragments back to the handler context through this adapter. |
+| `createBuild<Tool>Executor(executor, prepared)` | Tool-specific. Returns the async function that actually invokes `xcrun xcodebuild` with the prepared request, streams its stdout through the pipeline's parser, and returns the canonical domain result. The real subprocess call lives here. |
+| `setXcodebuildStructuredOutput(ctx, kind, result)` | Sets `ctx.structuredOutput` with the canonical schema ID (`mobilebuildmcp.output.build-result`, `…build-run-result`, or `…test-result`) and the current schema version. |
+
+Build-like results must include `request` in the final result. Do not rely on the streamed invocation fragment for final rendering, `--output json`, or MCP `structuredContent`.
+
+Working reference: `src/mcp/tools/simulator/build_sim.ts`.
+
+ctx shadowing inside the executor
+
+Inside an xcodebuild-pipeline executor (the function returned by `createBuild<Tool>Executor`) the variable named `ctx` is the streaming execution context, not the handler context, and its method is `emitFragment(...)` rather than `emit(...)`. In your top-level `<tool>Logic` function, `ctx` is always the handler context with `emit(...)`. They are different objects with different APIs; do not conflate them.
+
+Use this pipeline only when the tool wraps `xcodebuild`. For any other long-running subprocess tool, use Pattern 1 or Pattern 2.
+
+## Modifying a tool
+
+Metadata Input schema Output schema
+
+Change `manifests/tools/<tool>.yaml` first. Metadata includes descriptions, names, annotations, availability, predicates, routing, next-step templates, and output schema metadata.
+
+Run `npm run docs:check`. If a name changes, update tests, fixtures, and any next-step references that call the old name.
+
+| Change | Required follow-up |
+| --- | --- |
+| Metadata only | Run docs checks and update fixture text if descriptions or names are visible. |
+| Input schema | Update Zod schema, parameter tests, docs checks, and any snapshots affected by validation text. |
+| Output shape change | Add `schemas/structured-output/<schema>/2.schema.json`, emit `schemaVersion: '2'`, update manifest `outputSchema.version`, and update fixtures. |
+| Runtime behavior | Update logic tests, MCP text fixtures, CLI text fixtures, JSON fixtures, and changelog if user-facing. |
+
+Schema versions are contract versions
+
+Use integer string versions. Do not use semver-style schema versions such as `"1.1"` or `"2.0"`.
+
+## Deleting a tool
+
+Use a deletion checklist. Tool removal affects user-visible surfaces.
+
+1.   Remove the tool ID from every workflow manifest.
+2.   Delete `manifests/tools/<tool>.yaml`.
+3.   Delete the implementation file if no other code imports it.
+4.   Delete tests that only cover that tool.
+5.   Delete MCP, CLI, and JSON fixtures for that tool.
+6.   Run `npm run docs:check`.
+7.   Run `npm run typecheck`, `npm test`, and `npm run test:schema-fixtures`.
+
+Do not delete a shared schema just because one tool stopped using it. Schemas are published contracts. Remove one only when it is unpublished or clearly unused after checking consumers.
+
+## Common mistakes
+
+*   Adding an implementation without a matching tool manifest.
+*   Adding a tool manifest without adding the tool ID to a workflow manifest.
+*   Setting `ctx.structuredOutput` without manifest `outputSchema` metadata.
+*   Emitting fragments from a non-streaming tool.
+*   Using `createStreamingExecutionContext(...)` in a non-streaming tool.
+*   Relying on streamed fragments for final JSON data.
+*   Changing JSON payload shape without updating schemas and JSON fixtures.
+*   Creating handler-owned next steps for a finite branch that a manifest `condition` can represent.
+*   Declaring a conditional template without activating the exact same key in the handler.
+*   Updating snapshots before understanding why they changed.
+*   Preserving legacy fallback behavior instead of making the requested path canonical.
+
+## Related
+
+*   [Tool Lifecycle](https://www.mobilebuildmcp.com/docs/architecture-tool-lifecycle#streaming-vs-non-streaming-tools), streaming, fragments, results, and rendering
+*   [Output Formats](https://www.mobilebuildmcp.com/docs/output-formats), CLI JSON and MCP `structuredContent` responses
+*   [Testing](https://www.mobilebuildmcp.com/docs/testing), unit, snapshot, schema, and pre-commit rules
+*   [Tools Reference](https://www.mobilebuildmcp.com/docs/tools), generated catalog of exposed tools

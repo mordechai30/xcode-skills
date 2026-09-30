@@ -1,0 +1,112 @@
+# MCP Protocol Support
+
+Source: https://www.mobilebuildmcp.com/docs/mcp-protocol-support
+
+Which MCP protocol features MobileBuildMCP implements, advertises, and does not currently support.
+
+The [Model Context Protocol](https://modelcontextprotocol.io/specification) has many optional features. This page documents what MobileBuildMCP actually implements, so MCP-literate users and MCP clients can evaluate coverage without reading source. Each section links out to the relevant part of the MCP specification.
+
+## Tools
+
+MobileBuildMCP implements the [MCP tools surface](https://modelcontextprotocol.io/specification/2025-11-25/server/tools):
+
+*   `tools/list` returns the active tool set for the current workflow configuration.
+*   `tools/call` invokes a registered tool and returns MCP content blocks, plus `structuredContent` when the tool has structured output.
+
+Workflow selection controls which tools appear. By default, only the simulator workflow is enabled. You can enable more workflows through configuration or `MOBILEBUILDMCP_ENABLED_WORKFLOWS`.
+
+When `experimentalWorkflowDiscovery` is enabled, the `manage-workflows` tool can add or remove workflows during an MCP session. That changes the active registered tool set.
+
+## Tool annotations
+
+MobileBuildMCP includes tool annotations in the MCP `tools/list` response. These are client hints, not security boundaries. See the [MCP Tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools) for how compliant clients are expected to use them.
+
+| Annotation key | User outcome in a compliant client |
+| --- | --- |
+| `title` | Clients can show a readable name instead of only the machine name. |
+| `readOnlyHint` | Read only tools can be treated as lower risk, and clients may reduce extra confirmations. |
+| `destructiveHint` | Destructive tools can stay behind stronger confirmations. |
+| `idempotentHint` | Tools where calling repeatedly with the same arguments produces the same effect can be safely retried by clients on transient failures. |
+| `openWorldHint` | Clients can treat tools as local operations, not open world operations. |
+
+MobileBuildMCP currently sets `title`, `readOnlyHint`, `destructiveHint`, and `openWorldHint` on every tool. `idempotentHint` is supported by the spec but is not currently set on any MobileBuildMCP tool.
+
+## Structured content
+
+MobileBuildMCP tools return MCP [`structuredContent`](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#structured-content) using a consistent envelope.
+
+Every tool call also returns human-readable text content, which is what your agent reads in its conversation ("Build succeeded", a list of simulators, an error message). Structured content is sent alongside that text as a parallel JSON object, so the agent or any automation can consume the result programmatically without parsing prose. Text is for the agent's narrative; structured content is for branching, chaining, and automation.
+
+The envelope wraps every tool's structured payload in the same shape, so consumers can branch on `didError`, read `data` against the named `schema`, and consume optional `nextSteps` hint lines for follow-up automation:
+
+```
+{
+  "schema": "mobilebuildmcp.output.simulator-list",
+  "schemaVersion": "2",
+  "didError": false,
+  "error": null,
+  "data": {},
+  "nextSteps": [
+    "Build an app for this simulator: build_sim({ simulatorId: \"A1B2C3D4-E5F6-7890-ABCD-EF0123456789\" })"
+  ]
+}
+```
+
+`nextSteps` is omitted when no final follow-up actions were resolved. The envelope fields are documented in [Output Formats](https://www.mobilebuildmcp.com/docs/output-formats). Canonical JSON schemas live in [`schemas/structured-output/`](https://github.com/getsentry/MobileBuildMCP/tree/main/schemas/structured-output). Tools advertise their output schema in `tools/list` as an object-shaped union of the domain schema OR `mobilebuildmcp.output.error`, so clients can always branch on `schema` to determine whether a structured result is a normal domain payload or a generic error.
+
+The [Xcode IDE bridge](https://www.mobilebuildmcp.com/docs/xcode-ide) still uses the MobileBuildMCP envelope for bridge tool results, but proxied remote-tool payloads inside `data` come from Xcode's own MCP service.
+
+## Resources
+
+MobileBuildMCP exposes the following [MCP resources](https://modelcontextprotocol.io/specification/2025-11-25/server/resources):
+
+| URI | Availability | Contents |
+| --- | --- | --- |
+| `mobilebuildmcp://simulators` | Normal MCP sessions | Available iOS simulators with UUIDs and states. |
+| `mobilebuildmcp://devices` | Normal MCP sessions | Connected physical Apple devices with UUIDs, names, and connection status. |
+| `mobilebuildmcp://doctor` | Normal MCP sessions | Development environment diagnostics and configuration status. |
+| `mobilebuildmcp://session-status` | Normal MCP sessions | Runtime session state for log capture and debugging. |
+| `mobilebuildmcp://xcode-ide-state` | Xcode agent sessions only | Current Xcode IDE selection, including scheme and simulator state when available. |
+
+The server advertises resource subscriptions and resource list changes during initialize. Current source does not emit runtime resource update or resource list change notifications after startup.
+
+## Notifications
+
+MobileBuildMCP advertises `tools.listChanged` support during initialize. See the MCP spec for [tools/list_changed](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#list-changed-notification).
+
+The Xcode IDE bridge explicitly emits tool list changed notifications when proxied Xcode tools are synced, cleared, or disconnected.
+
+Not implemented today:
+
+*   MCP progress notifications for long running tool calls.
+*   MCP log-message notifications from the server logger.
+*   Runtime resource update notifications.
+
+## Prompts
+
+MobileBuildMCP does not currently register [MCP prompts](https://modelcontextprotocol.io/specification/2025-11-25/server/prompts). There is no `prompts/list` or `prompts/get` support in the server.
+
+## Server capabilities (initialize)
+
+The server advertises this [capability shape](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) on initialize:
+
+```
+{
+  "tools": {
+    "listChanged": true
+  },
+  "resources": {
+    "subscribe": true,
+    "listChanged": true
+  },
+  "logging": {}
+}
+```
+
+The server also sets MCP server instructions that tell agents to prefer MobileBuildMCP tools for Apple platform tasks and explain default workflow expectations.
+
+## Related
+
+*   [Tools Reference](https://www.mobilebuildmcp.com/docs/tools), complete tool catalog.
+*   [Output Formats](https://www.mobilebuildmcp.com/docs/output-formats), structured content envelope details.
+*   [MCP Server Mode](https://www.mobilebuildmcp.com/docs/mcp-mode), running the server from MCP clients.
