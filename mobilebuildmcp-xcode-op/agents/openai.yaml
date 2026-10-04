@@ -1,0 +1,4 @@
+interface:
+  display_name: "MobileBuildMCP macOS and Apple bridge Operations"
+  short_description: "Build and control macOS Xcode or SwiftPM sessions"
+  default_prompt: "Use $mobilebuildmcp-xcode-op for the requested macOS app operation."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Apple Xcode MCP Operations"
+  short_description: "Build and control macOS Xcode or SwiftPM sessions"
+  default_prompt: "Use $apple-mcp-xcode-op for the requested macOS app operation."
