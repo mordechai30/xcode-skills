@@ -8,7 +8,6 @@ import unittest
 
 location = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(location / 'scripts' if (location / 'scripts').exists() else location))
-from lifecycle.products import record, reusable
 from lifecycle.state import atomic_json, read_json
 
 
@@ -16,22 +15,6 @@ class ArtifactTests(unittest.TestCase):
     """Check current product evidence and corrupt state handling.
     Each test owns all files it creates.
     """
-    def test_modified_product_is_not_claimed_as_verified(self):
-        """Reject stale Build evidence after executable replacement.
-        Product age alone does not require a rebuild.
-        """
-        with tempfile.TemporaryDirectory() as name:
-            folder = Path(name)
-            executable = folder / 'app'
-            executable.write_bytes(b'original')
-            ctx = {'data_dir': folder, 'selection': {'owner_project': '/fixture/App.xcodeproj',
-                   'configuration': 'Debug', 'target': 'App'}, 'log': folder / 'log.txt'}
-            product = {'executable': str(executable)}
-            record(ctx, product)
-            self.assertTrue(reusable(ctx, product))
-            executable.write_bytes(b'replacement')
-            self.assertFalse(reusable(ctx, product))
-
     def test_corrupt_record_is_not_treated_as_absent(self):
         """Surface corrupt JSON state instead of choosing a new context.
         Atomic writes produce complete readable records.

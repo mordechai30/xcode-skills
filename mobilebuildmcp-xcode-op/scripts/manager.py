@@ -3,20 +3,41 @@
 Follow-up commands reach the same runtime through a relative local socket.
 """
 import argparse
-import importlib
+from lifecycle.runtime import namespace, serve, start
 import json
-import os
 from pathlib import Path
-import socket
-import subprocess
 import sys
 import time
+import traceback
 
 from lifecycle.channel import connect
-from lifecycle.process import capture_identity, verify_identity
-from lifecycle.state import append_log, atomic_json, operation_lock, read_json
+from lifecycle.process import verify_identity
+from lifecycle.state import append_log, operation_lock, read_json
 from lifecycle.output import collect
-from operations.common import ask, context, resolve_selection, observe
+from lifecycle.response import emit
+from operations import build, run, set_breakpoint, pause, continue_session, kill, debugger_command
+
+# Explicit public operation routing; no reflective module discovery.
+OPERATIONS = {"build": build, "run": run, "set-breakpoint": set_breakpoint, "pause": pause,
+              "continue": continue_session, "kill": kill, "debugger-command": debugger_command}
+
+
+class RequestParser(argparse.ArgumentParser):
+    """Keep help and argument errors on the bounded response path.
+    Parsing never writes argparse diagnostics directly to stdout or stderr.
+    """
+    def error(self, message):
+        """Return a parse error to the public entrypoint.
+        Full argparse usage is replaced by the local examples reference.
+        """
+        raise ValueError(message)
+
+    def print_help(self, file=None):
+        """Provide compact help through the same public emitter.
+        Detailed examples are packaged locally.
+        """
+        emit({"status": "success", "message": "build|run|set-breakpoint|pause|continue|kill|debugger-command. See references/examples.md."})
+from operations.common import ask, context
 
 # Installed package root used for this skill's locator and metadata.
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +47,7 @@ def parser():
     """Create the shared CLI inputs.
     Private service inputs are accepted only by the runtime entry path.
     """
-    result = argparse.ArgumentParser(description='Manage one macOS Xcode app or SwiftPM executable context.')
+    result = RequestParser(description='Manage one macOS Xcode app or SwiftPM executable context.')
     result.add_argument('operation', choices=['build', 'run', 'set-breakpoint', 'pause', 'continue', 'kill', 'debugger-command'])
     for key in ('project', 'workspace', 'package', 'file', 'working-directory', 'derived-data'):
         result.add_argument('--' + key, type=Path)
@@ -63,111 +84,19 @@ def dispatch(args, ctx):
     Save complete results and errors in the session log.
     """
     args._context = ctx
-    module = 'continue_session' if args.operation == 'continue' else args.operation.replace('-', '_')
     try:
-        value = importlib.import_module('operations.' + module).execute(args, ROOT)
+        value = OPERATIONS[args.operation].execute(args, ROOT)
     except ValueError as error:
         value = ask(str(error))
-    except (RuntimeError, OSError, TimeoutError) as error:
+    except Exception as error:
+        if ctx.get('log'):
+            append_log(ctx['log'], 'Operation exception', ''.join(traceback.format_tb(error.__traceback__)) + type(error).__name__)
         value = {'status': 'uncertain', 'message': str(error)}
     if ctx.get('log'):
-        append_log(ctx['log'], args.operation, json.dumps(value, default=str))
+        append_log(ctx['log'], args.operation + ' outcome', value.get('message', value.get('status', 'uncertain')))
+        value.setdefault('log', str(ctx['log']))
     collect(ctx)
     return value
-
-
-def namespace(values):
-    """Restore JSON requests to argparse inputs.
-    Path inputs use the same types as the public CLI.
-    """
-    for key in ('project', 'workspace', 'package', 'file', 'working_directory', 'derived_data'):
-        if values.get(key):
-            values[key] = Path(values[key])
-    return argparse.Namespace(**values)
-
-
-def serve(folder):
-    """Own the backend connection until required cleanup completes.
-    Watching is performed by brief status requests outside this loop.
-    """
-    bootstrap = read_json(folder / 'runtime-request.json')
-    args = namespace(bootstrap['args'])
-    ctx = context(args, ROOT)
-    ctx.update(data_dir=folder, selection=bootstrap['selection'], discovery=bootstrap['discovery'],
-               runtime_identity=capture_identity(os.getpid()))
-    ctx['discovery'] = None
-    os.chdir(folder)
-    with socket.socket(socket.AF_UNIX) as server:
-        server.bind('m.sock')
-        os.chmod('m.sock', 0o600)
-        server.listen(8)
-        atomic_json(ROOT / '.active-session.json', {'data_dir': str(folder), 'selection': ctx['selection'],
-                                                  'runtime_identity': ctx['runtime_identity']})
-        while True:
-            channel, _ = server.accept()
-            with channel:
-                with channel.makefile('r') as stream:
-                    message = json.loads(stream.readline())
-                if message.get('operation') == '_watch':
-                    try:
-                        value = ctx['backend'].debug_status(ctx)
-                    except (RuntimeError, OSError, TimeoutError) as error:
-                        value = {'status': 'uncertain', 'message': str(error)}
-                    observe(ctx, value)
-                    collect(ctx)
-                    if value.get('state') != 'running' and ctx.get('log'):
-                        append_log(ctx['log'], 'Watch ended', json.dumps(value))
-                else:
-                    request = namespace(message)
-                    conflict = message['operation'] != 'run' and any(message.get(key) and str(message[key]) != str(ctx['selection'].get(key))
-                                   for key in ('project', 'workspace', 'package', 'configuration', 'scheme', 'target', 'destination'))
-                    value = ask('Supplied selection conflicts with the active context.') if conflict else dispatch(request, ctx)
-                try:
-                    channel.sendall((json.dumps(value, default=str) + '\n').encode())
-                except (BrokenPipeError, ConnectionResetError):
-                    if ctx.get('log'):
-                        append_log(ctx['log'], 'Client disconnected', 'Session remains available after reply loss.')
-            if not ctx.get('session') and message.get('operation') in ('kill', 'run'):
-                close = getattr(ctx['backend'], 'close', None)
-                if close:
-                    close(ctx)
-                ROOT.joinpath('.active-session.json').unlink(missing_ok=True)
-                break
-    folder.joinpath('m.sock').unlink(missing_ok=True)
-
-
-def start(args):
-    """Resolve the app owner and start one connection-owning runtime.
-    The locator reserves the context before launching the app.
-    """
-    ctx = context(args, ROOT)
-    selected = resolve_selection(ctx, args)
-    if selected['status'] != 'success':
-        close = getattr(ctx['backend'], 'close', None)
-        if close:
-            close(ctx)
-        return selected
-    folder = ctx['data_dir']
-    if folder.joinpath('m.sock').exists():
-        return ask('An old socket remains. Inspect its runtime and cleanup records before Run.')
-    saved_args = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
-    atomic_json(folder / 'runtime-request.json', {'args': saved_args, 'selection': ctx['selection'],
-                                                'discovery': ctx['discovery']})
-    close = getattr(ctx['backend'], 'close', None)
-    if close:
-        close(ctx)
-    output = (folder / 'runtime-output.txt').open('a')
-    process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '_serve', str(folder)],
-                               stdout=output, stderr=output, start_new_session=True)
-    output.close()
-    atomic_json(ROOT / '.active-session.json', {'data_dir': str(folder), 'selection': ctx['selection'],
-                                              'runtime_identity': capture_identity(process.pid)})
-    deadline = time.monotonic() + 20
-    while not (folder / 'm.sock').exists() and process.poll() is None and time.monotonic() < deadline:
-        time.sleep(.05)
-    if process.poll() is not None or not (folder / 'm.sock').exists():
-        return ask('Runtime initialization failed. Inspect runtime-output.txt before cleanup.')
-    return connect(folder, 'm.sock', saved_args, timeout=7500)
 
 
 def main():
@@ -175,7 +104,7 @@ def main():
     Interrupted watching leaves app and debugger state unchanged.
     """
     if len(sys.argv) > 1 and sys.argv[1] == '_serve':
-        serve(Path(sys.argv[2]))
+        serve(Path(sys.argv[2]), ROOT, dispatch)
         return 0
     args = parser().parse_args()
     validate(args)
@@ -193,7 +122,7 @@ def main():
                     result = ask('Retained runtime is lost. Use Kill recovery; do not attach another debugger.', ['kill', 'wait'])
             else:
                 try:
-                    result = connect(locator['data_dir'], 'm.sock', values, timeout=120)
+                    result = connect(locator['data_dir'], 'm.sock', values, timeout=60)
                 except (OSError, RuntimeError) as error:
                     if args.operation == 'kill':
                         from operations.kill import recover
@@ -201,7 +130,7 @@ def main():
                     else:
                         result = ask('Retained channel is lost: ' + str(error), ['kill', 'wait'])
         elif args.operation == 'run':
-            result = start(namespace(values))
+            result = start(namespace(values), ROOT)
             locator = read_json(ROOT / '.active-session.json')
         elif args.operation == 'build':
             ctx = context(args, ROOT)
@@ -211,17 +140,19 @@ def main():
                 close(ctx)
         else:
             result = ask('No skill-owned app session exists. Use Run first.')
-    print(json.dumps(result, indent=2, default=str), flush=True)
     if result.get('watch') and locator:
         try:
             while True:
                 state = connect(locator['data_dir'], 'm.sock', {'operation': '_watch'})
                 if state.get('state') != 'running':
-                    print(json.dumps(state, indent=2, default=str), flush=True)
+                    result = state | {'log': result.get('log')}
                     break
                 time.sleep(.3)
         except KeyboardInterrupt:
-            print(json.dumps({'status': 'success', 'message': 'Watching interrupted. Session remains available.'}))
+            result = {'status': 'success', 'message': 'Watching interrupted. Session remains available.'}
+        except (OSError, RuntimeError) as error:
+            result = ask('Watch connection lost. Use Kill or wait: ' + str(error))
+    emit(result, args.operation)
     return 0 if result.get('status') == 'success' else 1
 
 
@@ -229,8 +160,12 @@ if __name__ == '__main__':
     try:
         raise SystemExit(main())
     except ValueError as error:
-        print(json.dumps(ask(str(error))))
+        emit(ask(str(error)))
         raise SystemExit(2)
-    except (RuntimeError, OSError) as error:
-        print(json.dumps({'status': 'uncertain', 'message': str(error)}))
+    except KeyboardInterrupt:
+        emit({'status': 'uncertain', 'message': 'Request interrupted. Inspect the owned session before retry.'})
+        raise SystemExit(130)
+    except Exception as error:
+        (ROOT / 'last-error.txt').write_text(traceback.format_exc())
+        emit({'status': 'uncertain', 'message': str(error)})
         raise SystemExit(2)

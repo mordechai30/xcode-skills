@@ -4,7 +4,7 @@ import os
 import socket
 
 
-def connect(folder, name, request, timeout=180):
+def connect(folder, name, request, timeout=60):
     """Send one request from the folder containing a short socket name.
     Call only from a single-threaded CLI or serialized retained runtime.
     """

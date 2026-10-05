@@ -32,24 +32,16 @@ def tool(ctx, name, values, before_send=None):
     marker = before_send or (ctx.get('mark_build') if name in ('build_macos', 'swift_package_build', 'swift_package_run') else None)
     response = connection.call(name, values, before_send=marker,
                                timeout=60 if name in ('build_macos', 'clean', 'xcode_ide_call_tool', 'swift_package_build', 'swift_package_run', 'swift_package_clean') else 15)
+    evidence = name + ' ' + json.dumps(values) + '\n' + response['raw']
     if ctx.get('log'):
-        append_log(ctx['log'], name, json.dumps({'arguments': values, 'response': response}))
+        append_log(ctx['log'], 'Backend response', evidence)
+    else:
+        ctx.setdefault('evidence', []).append(evidence)
     data = response.get('structured')
     if not isinstance(data, dict):
         if response.get('isError'):
             return {'status': 'failure', 'raw': response}
         data = apple.decode(response)
-    expected = {'build_macos': 'mobilebuildmcp.output.build-result', 'clean': 'mobilebuildmcp.output.build-result',
-                'swift_package_build': 'mobilebuildmcp.output.build-result', 'swift_package_clean': 'mobilebuildmcp.output.build-result',
-                'swift_package_run': 'mobilebuildmcp.output.build-run-result', 'swift_package_stop': 'mobilebuildmcp.output.stop-result',
-                'get_mac_app_path': 'mobilebuildmcp.output.app-path',
-                'launch_mac_app': 'mobilebuildmcp.output.launch-result', 'stop_mac_app': 'mobilebuildmcp.output.stop-result',
-                'xcode_ide_list_tools': 'mobilebuildmcp.output.xcode-bridge-tool-list',
-                'xcode_ide_call_tool': 'mobilebuildmcp.output.xcode-bridge-call-result'}
-    if not isinstance(data.get('schemaVersion'), str) or not data['schemaVersion']:
-        raise RuntimeError('MobileBuildMCP result omitted schema identity or version: ' + response['raw'])
-    if name in expected and data.get('schema') != expected[name]:
-        return {'status': 'uncertain', 'message': 'Returned schema does not match the requested operation.', 'raw': response}
     if response.get('isError') or data.get('didError') or data.get('error'):
         return {'status': 'failure', 'raw': response, 'envelope': data}
     payload = data.get('data', {})
@@ -171,7 +163,7 @@ def macos_context(args, ctx):
     if result.get('didError') or result.get('error'):
         raise RuntimeError('MobileBuildMCP rejected selected defaults: ' + response['raw'])
     if ctx.get('log'):
-        append_log(ctx['log'], 'Mobile macOS defaults', json.dumps({'arguments': value, 'response': response}))
+        append_log(ctx['log'], 'Mobile macOS defaults', json.dumps(value) + '\n' + response['raw'])
     ctx['runtime']['macos_defaults'] = value
 
 

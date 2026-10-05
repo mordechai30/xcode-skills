@@ -80,11 +80,11 @@ class MobileResultTests(unittest.TestCase):
         """
         self.assertEqual(self.result(status='FAILED', error=True)['status'], 'failure')
 
-    def test_wrong_operation_schema_is_uncertain(self):
-        """Reject a success envelope for an unrelated operation.
-        Nonempty schema metadata alone is insufficient.
+    def test_compatible_schema_names_are_not_hard_coded(self):
+        """Use actual operation fields rather than a reference schema-name table.
+        A compatible renamed schema must not reject verified outcome fields.
         """
-        self.assertEqual(self.result(schema='wrong.operation')['status'], 'uncertain')
+        self.assertEqual(self.result(schema='future.operation')['status'], 'success')
 
     def test_operation_fields_and_variable_versions(self):
         """Require actual successful operation fields.

@@ -80,8 +80,11 @@ def call(ctx, name, arguments=None):
         if ctx.get('log'):
             append_log(ctx['log'], name, json.dumps({'arguments': arguments, 'error': str(error)}))
         raise
+    evidence = name + ' ' + json.dumps(arguments) + '\n' + value['raw']
     if ctx.get('log'):
-        append_log(ctx['log'], name, json.dumps({'arguments': arguments, 'response': value}))
+        append_log(ctx['log'], 'Backend response', evidence)
+    else:
+        ctx.setdefault('evidence', []).append(evidence)
     return decode(value)
 
 
@@ -97,7 +100,7 @@ def discover_destinations(args, ctx):
     deadline = time.monotonic() + 5
     while not any(item.get('name') == scheme for item in listed.get('schemes', [])):
         if time.monotonic() >= deadline:
-            raise RuntimeError('Apple backend has not discovered the selected saved scheme: ' + scheme)
+            raise RuntimeError('Apple backend has not discovered the selected scheme: ' + scheme)
         time.sleep(.2)
         listed = call(ctx, 'XcodeListSchemes')
     switched = call(ctx, 'XcodeSwitchScheme', {'schemeName': scheme})
@@ -136,17 +139,24 @@ def settings(ctx):
     Configuration mismatch prevents Build, Clean, and product claims.
     """
     setup(ctx)
+    if ctx['runtime'].get('apple_settings'):
+        return ctx['runtime']['apple_settings']
     result = call(ctx, 'GetTargetBuildSettings', {'targetName': ctx['selection']['target']})
     rows = result['buildSettings']
     if rows and all('macroName' in row for row in rows):
         macros = {row['macroName']: row.get('evaluatedValue', row.get('value')) for row in rows}
+        if macros.get('CONFIGURATION') and macros['CONFIGURATION'] != ctx['selection']['configuration']:
+            raise RuntimeError('Existing scheme uses ' + str(macros.get('CONFIGURATION')) + '; requested ' + ctx['selection']['configuration'] + '. Select a matching scheme.')
         if not macros.get('OBJROOT') or not macros.get('SYMROOT'):
             raise RuntimeError('Apple settings omitted the actual Build roots needed for native Clean.')
         selection = ctx['selection']
         command = ['xcrun', 'xcodebuild', *native._container(ctx), '-scheme', selection['scheme'],
                    '-configuration', selection['configuration'], '-destination', ctx['runtime']['native_destination'],
                    'OBJROOT=' + macros['OBJROOT'], 'SYMROOT=' + macros['SYMROOT'], '-showBuildSettings', '-json']
-        resolved = native._call(command, timeout=300)
+        if selection.get('generated_scheme'):
+            index = command.index('-configuration')
+            del command[index:index + 2]
+        resolved = native._call(command, timeout=60, ctx=ctx)
         if resolved['status'] != 'success':
             raise RuntimeError('Computed Apple Build paths could not be established: ' + resolved['raw'])
         matches = [row['buildSettings'] for row in json.loads(resolved['stdout']) if row.get('target') == selection['target']]
@@ -156,6 +166,7 @@ def settings(ctx):
                and row.get('CONFIGURATION') == ctx['selection']['configuration']]
     if len(matches) != 1:
         raise RuntimeError('Apple build settings do not establish exactly one app in the selected configuration.')
+    ctx['runtime']['apple_settings'] = matches[0]
     return matches[0]
 
 
@@ -182,7 +193,7 @@ def clean(args, ctx):
         if key not in values:
             raise RuntimeError('Apple Clean context is missing ' + key)
         command.append(key + '=' + values[key])
-    return native._call(command + ['clean'])
+    return native._call(command + ['clean'], ctx=ctx)
 
 
 def build_evidence(value):
@@ -243,7 +254,6 @@ def launch(args, ctx, product):
         return {'status': evidence['status'], 'state': 'uncertain', 'build': evidence,
                 'debugger': debug, 'launch': error.response}
     if ctx.get('session'):
-        ctx['session']['launch'] = value
         pid = value.get('processIdentifier')
         early = capture_identity(pid) if pid else None
         if early and product.get('executable') and verify_identity(early, product['executable']):

@@ -41,7 +41,27 @@ class AppleResultTests(unittest.TestCase):
             import json
             saved = json.loads((Path(directory) / 'session.json').read_text())
             self.assertEqual(saved['app'], identity)
-            self.assertEqual(saved['launch']['processIdentifier'], 200)
+            self.assertNotIn('launch', saved)
+    def test_generated_configuration_uses_actual_scheme_default(self):
+        """Verify generated schemes without forcing the requested configuration.
+        A default configuration mismatch blocks backend Build and launch.
+        """
+        import json
+        from backend.apple import settings
+        ctx = {'runtime': {'apple_destination': 'My Mac', 'native_destination': 'platform=macOS'},
+               'selection': {'project': '/App.xcodeproj', 'workspace': None, 'scheme': 'App',
+                             'target': 'App', 'configuration': 'Debug', 'generated_scheme': True}}
+        macros = {'buildSettings': [{'macroName': name, 'evaluatedValue': '/build'} for name in ('OBJROOT','SYMROOT')]}
+        row = {'target': 'App', 'buildSettings': {'PRODUCT_TYPE': 'com.apple.product-type.application', 'CONFIGURATION': 'Debug'}}
+        with patch('backend.apple.call', return_value=macros), patch('backend.apple.native._call', return_value={'status':'success','stdout':json.dumps([row])}) as command:
+            self.assertEqual(settings(ctx)['CONFIGURATION'], 'Debug')
+            self.assertNotIn('-configuration', command.call_args.args[0])
+        ctx['runtime'].pop('apple_settings')
+        row['buildSettings']['CONFIGURATION'] = 'Release'
+        with patch('backend.apple.call', return_value=macros), patch('backend.apple.native._call', return_value={'status':'success','stdout':json.dumps([row])}):
+            with self.assertRaisesRegex(RuntimeError, 'selected configuration'):
+                settings(ctx)
+
     def test_empty_errors_are_not_success(self):
         """Reject an empty error array as standalone success evidence.
         The tool must supply a result or completed Build log.

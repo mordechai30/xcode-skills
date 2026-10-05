@@ -67,7 +67,7 @@ def execute(args, root):
     return {'status': 'success' if complete else 'needs_user_input',
             'backend': backend, 'app': app_result, 'dedicated': helpers, 'breakpoints': breakpoints,
             'warning': warning,
-            'message': 'Cleanup complete.' if complete else 'Cleanup remains incomplete.'}
+            'message': ('Cleanup complete. ' + warning if warning else 'Cleanup complete.') if complete else 'Cleanup remains incomplete.'}
 
 
 def recover(root, locator):
@@ -98,7 +98,7 @@ def recover(root, locator):
     complete = app_result['status'] == 'success' and all(entry['status'] == 'success' for entry in helpers)
     result = {'status': 'success' if complete else 'needs_user_input', 'app': app_result, 'dedicated': helpers,
               'warning': 'Breakpoint removal was not verified; an IDE breakpoint may remain.' if session.get('breakpoints') else None,
-              'message': 'Recovered cleanup complete.' if complete else 'Recovered cleanup remains incomplete.'}
+              'message': ('Recovered cleanup complete. ' + ('Breakpoint removal unverified; an IDE breakpoint may remain.' if session.get('breakpoints') else '')) if complete else 'Recovered cleanup remains incomplete.'}
     if session.get('log'):
         collect({'log': Path(session['log']), 'data_dir': folder, 'runtime': {}})
         append_log(Path(session['log']), 'Kill recovery', str(result))

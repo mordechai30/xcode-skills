@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 def launch_arguments(selection):
     """Read enabled arguments from the selected saved launch scheme.
-    Direct and Mobile product-reuse launches preserve Xcode argument values.
+    Saved schemes supply arguments; generated schemes use explicit arguments or none.
     """
     if selection.get('package'):
         return selection.get('arguments', [])
@@ -16,8 +16,10 @@ def launch_arguments(selection):
         containers.append(Path(selection['workspace']))
     sources = [file for container in containers for file in container.rglob('*.xcscheme')
                if file.stem == selection['scheme']]
+    if not sources:
+        return selection.get('arguments', [])
     if len(sources) != 1:
-        raise ValueError('Select one saved launch scheme to resolve app arguments.')
+        raise ValueError('Several saved launch schemes match the selection.')
     launch = ET.parse(sources[0]).find('LaunchAction')
     if launch is None:
         raise ValueError('Selected saved scheme has no LaunchAction.')
@@ -53,8 +55,8 @@ def suitable(path, target, configuration, identifier=None):
 
 
 def configured(selection, skill):
-    """Reuse a suitable saved scheme or copy one for the requested configuration.
-    The original bytes remain unchanged, and conflicting copies are numbered.
+    """Use an existing scheme; copy a saved scheme only for configuration changes.
+    Live backend settings verify generated schemes; saved originals remain unchanged.
     """
     project = Path(selection['owner_project'])
     containers = [project]
@@ -62,8 +64,11 @@ def configured(selection, skill):
         containers.append(Path(selection['workspace']))
     sources = [file for container in containers for file in container.rglob('*.xcscheme')
                if file.stem == selection['scheme']]
+    if not sources:
+        selection['generated_scheme'] = True
+        return selection['scheme']
     if len(sources) != 1:
-        raise ValueError('Select one saved source scheme; found ' + str(len(sources)) + '.')
+        raise ValueError('Several saved source schemes match the selection.')
     source = sources[0]
     identifier = target_identifier(project, selection['target'])
     if suitable(source, selection['target'], selection['configuration'], identifier):

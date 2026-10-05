@@ -39,12 +39,14 @@ class SavedSchemeTests(unittest.TestCase):
             self.assertIn('unrelated="keep"', copied)
             self.assertEqual(source.read_bytes(), original)
 
-    def test_absent_saved_source_requires_input(self):
-        """Reject missing saved schemes before writing a copy.
-        No unrelated source is chosen automatically.
+    def test_generated_scheme_needs_no_saved_source(self):
+        """Use a discovered generated scheme without creating a copy.
+        The backend must verify its live configuration.
         """
         with tempfile.TemporaryDirectory() as name:
             project = Path(name) / 'App.xcodeproj'
             project.mkdir()
-            with self.assertRaisesRegex(ValueError, 'saved source'):
-                configured({'owner_project': str(project), 'scheme': 'Missing'}, 'fixture')
+            selection = {'owner_project': str(project), 'scheme': 'App'}
+            self.assertEqual(configured(selection, 'fixture'), 'App')
+            self.assertTrue(selection['generated_scheme'])
+            self.assertEqual(list(project.iterdir()), [])

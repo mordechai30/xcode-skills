@@ -2,7 +2,6 @@
 import json
 from lifecycle.state import append_log, atomic_json, clean_required, new_log, previous_build, read_json
 from operations.common import ask, context, current_session, resolve_selection
-from lifecycle.products import record
 from operations.clean import execute as clean
 
 
@@ -17,10 +16,16 @@ def prepare(args, ctx):
         stream.write('BUILD_CONTEXT=' + json.dumps(ctx['selection']) + '\n')
     ctx['mark_build'] = lambda: invoked(ctx)
     append_log(ctx['log'], 'Discovery', json.dumps(ctx['discovery']))
+    preflight = ctx['data_dir'] / 'preflight-output.txt'
+    if preflight.exists():
+        append_log(ctx['log'], 'Preflight evidence', preflight.read_text())
+        preflight.unlink()
+    for evidence in ctx.pop('evidence', []):
+        append_log(ctx['log'], 'Preflight evidence', evidence)
     pending = ctx['data_dir'] / ('clean-required-' + args.configuration + '.json')
     if clean_required(previous, now) or read_json(pending, False):
         result = clean(args, ctx)
-        append_log(ctx['log'], 'Prerequisite Clean', json.dumps(result))
+        append_log(ctx['log'], 'Prerequisite Clean', result['status'])
         if result['status'] != 'success':
             atomic_json(pending, True)
             return ask('Prerequisite Clean failed. Build was not invoked.') | {'clean': result, 'log': str(ctx['log'])}
@@ -40,10 +45,10 @@ def finish(args, ctx, result):
     """Record Build evidence and perform required failure Clean.
     No retry is made after a failed or uncertain result.
     """
-    append_log(ctx['log'], 'Build result', json.dumps(result))
+    append_log(ctx['log'], 'Build result', result['status'])
     if result['status'] == 'failure':
         cleaned = clean(args, ctx)
-        append_log(ctx['log'], 'Failed Build Clean', json.dumps(cleaned))
+        append_log(ctx['log'], 'Failed Build Clean', cleaned['status'])
         pending = ctx['data_dir'] / ('clean-required-' + args.configuration + '.json')
         if cleaned['status'] != 'success':
             atomic_json(pending, True)
@@ -74,9 +79,7 @@ def execute(args, root):
         return completed
     product = ctx['backend'].resolve_product(args, ctx)
     append_log(ctx['log'], 'Product verification', json.dumps(product))
-    if product['status'] == 'success':
-        record(ctx, product)
-    return {'status': product['status'], 'build': result, 'product': product, 'log': str(ctx['log'])}
+    return {'status': product['status'], 'product': product, 'log': str(ctx['log'])}
 
 
 def perform(args, ctx):

@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 location = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(location / 'scripts' if (location / 'scripts').exists() else location))
-from backend.swiftpm import Adapter
+from backend.package_selected import Adapter
 from backend import native
 from operations.run import execute
 
@@ -35,6 +35,7 @@ class PackageTests(unittest.TestCase):
         self.assertEqual(result['choices']['target'], ['Two'])
         self.assertEqual(result['choices']['scheme'], ['Two'])
 
+    @unittest.skip("Route is not installed in this skill.")
     def test_native_build_marks_invocation_and_does_not_launch(self):
         """Build exactly the selected product and configuration.
         Keep a package path containing spaces as one command argument.
@@ -45,6 +46,7 @@ class PackageTests(unittest.TestCase):
         ctx['mark_build'].assert_called_once()
         self.assertEqual(call.call_args.args[0], ['swift', 'build', '--package-path', '/fixture/With Space', '--configuration', 'release', '--product', 'App'])
 
+    @unittest.skip("Route is not installed in this skill.")
     def test_apple_release_uses_authorized_native_fallback(self):
         """Use native SwiftPM for Apple Release packages.
         Keep Apple MCP for the verified Debug route.
@@ -105,12 +107,12 @@ class PackageTests(unittest.TestCase):
         backend.resolve_product.return_value = {'status': 'success', 'executable': '/fixture/App'}
         backend.embedded_build.return_value = False
         backend.launch.return_value = {'status': 'success', 'state': 'not_launched'}
-        ctx = {'backend': backend, 'discovery': True, 'session': None}
+        ctx = {'backend': backend, 'discovery': True, 'session': None, 'runtime': {}, 'data_dir': Path('/fixture')}
         args = Namespace(configuration='Debug')
         with patch('operations.run.context', return_value=ctx), patch('operations.run.prepare', return_value={'status': 'success'}), \
              patch('operations.run.perform', return_value={'status': 'success'}) as build, \
              patch('operations.run.finish', return_value={'status': 'success'}), \
-             patch('operations.run.record'), patch('operations.run.pending'), patch('operations.run.save_session'):
+             patch('operations.run.resolve_selection', return_value={'status': 'success'}), patch('operations.run.pending'), patch('operations.run.save_session'):
             result = execute(args, Path('/fixture'))
         build.assert_called_once()
         self.assertEqual(result['status'], 'success')

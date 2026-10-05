@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import plistlib
 import re
 import subprocess
 
@@ -52,32 +51,37 @@ def _container(ctx):
     return ["-workspace", selection["workspace"]]
 
 
-def _call(command, timeout=7200, cwd=None):
+def _call(command, timeout=7200, cwd=None, ctx=None):
     """Run one native command with a bounded wait.
-    Preserve stdout and stderr separately, plus complete diagnostic output.
+    Retain complete output once in the local attempt log.
     """
     try:
         result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False, cwd=cwd)
+        stdout = result.stdout
+        raw = result.stdout + result.stderr
+        status = 'success' if result.returncode == 0 else 'failure'
     except subprocess.TimeoutExpired as error:
         stdout = error.stdout or b''
         stderr = error.stderr or b''
         stdout = stdout.decode(errors='replace') if isinstance(stdout, bytes) else stdout
         stderr = stderr.decode(errors='replace') if isinstance(stderr, bytes) else stderr
-        return {'status': 'uncertain', 'raw': str(error) + '\n' + stdout + stderr,
-                'stdout': stdout, 'stderr': stderr, 'command': command}
+        raw, status = str(error) + '\n' + stdout + stderr, 'uncertain'
     except OSError as error:
-        return {"status": "failure", "raw": str(error), "command": command}
-    raw = result.stdout + result.stderr
-    return {"status": "success" if result.returncode == 0 else "failure",
-            "exit_code": result.returncode, "raw": raw, "stdout": result.stdout,
-            "stderr": result.stderr, "command": command}
+        stdout, raw, status = '', str(error), 'failure'
+    if ctx is not None:
+        evidence = json.dumps(command) + '\n' + raw
+        if ctx.get('log'):
+            append_log(ctx['log'], 'Native command', evidence)
+        else:
+            ctx.setdefault('evidence', []).append(evidence)
+    return {'status': status, 'raw': raw, 'stdout': stdout, 'command': command}
 
 
 def _listing(ctx):
     """Read Xcode's JSON listing for schemes and configurations.
     Parse stdout only so stderr warnings do not corrupt the JSON.
     """
-    result = _call(["xcrun", "xcodebuild", *_container(ctx), "-list", "-json"])
+    result = _call(["xcrun", "xcodebuild", *_container(ctx), "-list", "-json"], timeout=60, ctx=ctx)
     if result["status"] != "success":
         raise RuntimeError("Could not discover the selected Xcode container: " + result["raw"])
     try:
@@ -100,10 +104,11 @@ def discover(args, ctx):
     scheme = args.scheme or (schemes[0] if len(schemes) == 1 else None)
     if not scheme:
         return {"choices": {"scheme": schemes, "target": [], "destination": []}, "raw": listing}
-    destination_result = _call(base + ["-scheme", scheme, "-showdestinations"], timeout=180)
+    destination_result = _call(base + ["-scheme", scheme, "-showdestinations"], timeout=60, ctx=ctx)
     if destination_result["status"] != "success":
         raise RuntimeError("Could not discover Xcode destinations: " + destination_result["raw"])
     destinations = []
+    preferred = None
     compatible = destination_result['raw'].split('Destinations incompatible')[0]
     for entry in re.findall(r'\{([^}]+)\}', compatible):
         fields = dict((key.strip(), value.strip()) for key, value in
@@ -112,7 +117,9 @@ def discover(args, ctx):
             value = 'platform=macOS' + (',id=' + fields['id'] if fields.get('id') else '')
             if value not in destinations:
                 destinations.append(value)
-    settings = _call(base + ["-scheme", scheme, "-configuration", args.configuration or "Debug", "-showBuildSettings", "-json"], timeout=300)
+            if fields.get('name') == 'My Mac':
+                preferred = value
+    settings = _call(base + ["-scheme", scheme, "-configuration", args.configuration or "Debug", "-showBuildSettings", "-json"], timeout=60, ctx=ctx)
     if settings["status"] != "success":
         raise RuntimeError("Could not inspect selected scheme build settings: " + settings["raw"])
     try:
@@ -132,9 +139,9 @@ def discover(args, ctx):
         selected_owner = owners.get(args.target) or (next(iter(owners.values())) if len(owners) == 1 else None)
         if not selected_owner and len(targets) > 1 and not args.target:
             return {'owners': owners, 'choices': {'scheme': schemes, 'target': targets, 'destination': destinations},
-                    'raw': {'listing': listing, 'settings': settings['raw']}}
+                    'configurations': configs}
         if selected_owner:
-            owner_list = _call(['xcrun', 'xcodebuild', '-project', selected_owner, '-list', '-json'])
+            owner_list = _call(['xcrun', 'xcodebuild', '-project', selected_owner, '-list', '-json'], timeout=60, ctx=ctx)
             if owner_list['status'] != 'success':
                 raise RuntimeError('Could not validate owning project configurations.')
             configs = json.loads(owner_list['stdout']).get('project', {}).get('configurations', [])
@@ -142,9 +149,9 @@ def discover(args, ctx):
             raise RuntimeError('Select an app target to establish workspace configuration support.')
     if args.configuration not in configs:
         raise ValueError('Configuration is not supported by the owning project: ' + args.configuration)
-    return {"owners": owners, "choices": {"scheme": schemes, "target": targets, "destination": destinations,
+    return {"preferred_destination": preferred, "owners": owners, "choices": {"scheme": schemes, "target": targets, "destination": destinations,
                         "configuration": configs},
-            "raw": {"listing": listing, "destinations": destination_result["raw"], "settings": settings["raw"]}}
+            "configurations": configs}
 
 
 def _args(args, ctx, action):
@@ -165,9 +172,7 @@ def clean(args, ctx):
     """Clean the selected scheme and configuration.
     Capture the complete native result for prerequisite and failure handling.
     """
-    result = _call(_args(args, ctx, "clean"))
-    if ctx.get("log"):
-        append_log(ctx["log"], "xcodebuild Clean command", json.dumps(result["command"]))
+    result = _call(_args(args, ctx, "clean"), ctx=ctx)
     return result
 
 
@@ -177,9 +182,7 @@ def build(args, ctx):
     """
     command = _args(args, ctx, 'build')
     ctx['mark_build']()
-    result = _call(command)
-    if ctx.get("log"):
-        append_log(ctx["log"], "xcodebuild Build command", json.dumps(result["command"]))
+    result = _call(command, ctx=ctx)
     return result
 
 
@@ -194,7 +197,10 @@ def resolve_product(args, ctx):
                "-showBuildSettings", "-json"]
     if selection.get('architecture'):
         command.extend(['-arch', selection['architecture']])
-    result = _call(command, timeout=300)
+    result = ctx.setdefault('runtime', {}).get('product_settings')
+    if result is None:
+        result = _call(command, timeout=60, ctx=ctx)
+        ctx['runtime']['product_settings'] = result
     if result["status"] != "success":
         return result
     try:

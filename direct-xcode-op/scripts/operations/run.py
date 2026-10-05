@@ -3,7 +3,6 @@ import json
 from lifecycle.state import append_log
 from operations.build import prepare, perform, finish
 from operations.common import ask, context, resolve_selection, save_session
-from lifecycle.products import record
 from lifecycle.process import capture_identity
 
 
@@ -32,14 +31,14 @@ def execute(args, root):
     ctx = context(args, root)
     if ctx.get('session'):
         return ask('An app context already exists. Kill it before Run.')
-    if not ctx.get('discovery'):
-        selected = resolve_selection(ctx, args)
-        if selected['status'] != 'success':
-            return selected
-    product = ctx['backend'].resolve_product(args, ctx)
+    selected = resolve_selection(ctx, args) if not ctx.get('selection_ready') else {'status': 'success'}
+    if selected['status'] != 'success':
+        return selected
     embedded = getattr(ctx['backend'], 'embedded_build', lambda a: False)(args)
-    if product['status'] not in ('success', 'missing'):
+    product = ctx['backend'].resolve_product(args, ctx) if embedded else {}
+    if embedded and product['status'] not in ('success', 'missing'):
         return ask('Selected product evidence is unavailable or uncertain.') | {'product': product}
+    ctx['runtime']['output_offsets'] = {name: (ctx['data_dir'] / name).stat().st_size for name in ('launcher-output.txt', 'app-output.txt', 'app-error.txt', 'lldb-events.txt') if (ctx['data_dir'] / name).exists()}
     prepared = prepare(args, ctx)
     if prepared['status'] != 'success':
         return prepared
@@ -60,7 +59,6 @@ def execute(args, root):
     product = ctx['backend'].resolve_product(args, ctx)
     if product['status'] != 'success':
         return ask('Build completed but the selected product could not be verified.') | {'product': product}
-    record(ctx, product)
     if not embedded:
         pending(ctx, args, product)
         outcome = ctx['backend'].launch(args, ctx, product)
@@ -70,7 +68,7 @@ def execute(args, root):
         return outcome
     outcome.setdefault('debugger', args.configuration == 'Debug' and not args.no_debugger)
     outcome.setdefault('state', 'uncertain')
-    append_log(ctx['log'], 'Launch result', json.dumps(outcome))
+    append_log(ctx['log'], 'Launch result', json.dumps({key: outcome.get(key) for key in ('status', 'state', 'app', 'debugger', 'attachment_verified', 'message')}))
     if ctx.get('session'):
         recorded = ctx['session']['dedicated']
         outcome['dedicated'] = list({entry['pid']: entry for entry in recorded + outcome.get('dedicated', []) if entry}.values())
@@ -81,4 +79,4 @@ def execute(args, root):
     else:
         save_session(ctx, None)
         ctx['backend'].close(ctx)
-    return outcome | {'product': product, 'log': str(ctx['log'])}
+    return {key: outcome[key] for key in ('status', 'state', 'app', 'debugger', 'attachment_verified', 'message') if key in outcome} | {'log': str(ctx['log'])}

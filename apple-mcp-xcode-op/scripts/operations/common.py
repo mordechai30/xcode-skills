@@ -1,5 +1,4 @@
 """Resolve requests and provide the retained operation context."""
-import importlib
 import json
 from pathlib import Path
 from lifecycle.state import atomic_json, read_json
@@ -10,8 +9,8 @@ def backend(root):
     """Load the package's own adapter.
     No installed skill is imported by another package.
     """
-    name = json.loads((root / 'backend-choice.json').read_text())['backend']
-    return importlib.import_module('backend.' + name)
+    from backend.selected import adapter
+    return adapter
 
 
 def ask(message, choices=None):
@@ -47,7 +46,7 @@ def context(args, root):
         package = package.parent if package.name == 'Package.swift' else package
         if not (package / 'Package.swift').is_file():
             raise ValueError('Select a Swift package with Package.swift.')
-        from backend.swiftpm import Adapter
+        from backend.package_selected import Adapter
         adapter = Adapter(adapter)
         selection.update(package=str(package), arguments=getattr(args, 'arguments', []))
     return {'root': root, 'skill': root.name, 'selection': selection,
@@ -59,7 +58,7 @@ def resolve_selection(ctx, args, need_destination=True):
     """Discover and select one app, scheme, and destination.
     A workspace uses the owning project returned by build settings.
     """
-    found = ctx['backend'].discover(args, ctx)
+    found = ctx.get('discovery') or ctx['backend'].discover(args, ctx)
     ctx['discovery'] = found
     for key in ('scheme', 'target'):
         options = found.get('choices', {}).get(key, [])
@@ -76,18 +75,27 @@ def resolve_selection(ctx, args, need_destination=True):
     ctx['selection']['owner_project'] = owner
     ctx['data_dir'] = (Path(owner) if ctx['selection'].get('package') else Path(owner).parent) / ctx['skill']
     ctx['data_dir'].mkdir(parents=True, exist_ok=True)
-    if need_destination:
+    if need_destination and not ctx.get('selection_ready'):
         destination_discovery = getattr(ctx['backend'], 'discover_destinations', None)
         options = destination_discovery(args, ctx) if destination_discovery else None
         if options is None:
             options = found.get('choices', {}).get('destination', [])
         selected = ctx['selection'].get('destination')
+        preferred = 'My Mac' if 'My Mac' in options else found.get('preferred_destination')
+        if selected == 'My Mac' and preferred:
+            selected = preferred
         if selected is None:
-            if len(options) != 1:
+            selected = preferred or (options[0] if len(options) == 1 else None)
+            if selected is None:
                 return ask('Select destination.', options)
-            ctx['selection']['destination'] = options[0]
-        elif selected not in options:
+        if args.operation == 'run' and selected == 'Any Mac':
+            return ask('Any Mac is a generic Build destination. Run requires My Mac.', options)
+        if selected not in options:
             return ask('Unsupported destination: ' + selected, options)
+        if args.operation == 'run' and ('Any Mac' in selected or 'generic/' in selected or 'placeholder' in selected):
+            return ask('Any Mac is a generic Build destination. Run requires My Mac.', options)
+        ctx['selection']['destination'] = selected
+        ctx['selection_ready'] = True
     return {'status': 'success', 'selection': ctx['selection']}
 
 
@@ -106,6 +114,10 @@ def save_session(ctx, value):
     if value is None:
         ctx['active_path'].unlink(missing_ok=True)
         return
+    if value.get('product'):
+        value['product'] = {key: value['product'][key] for key in ('status', 'product', 'executable', 'configuration', 'target', 'bundle_identifier') if key in value['product']}
+    value = {key: value[key] for key in ('status', 'state', 'app', 'debugger', 'dedicated', 'selection', 'product', 'log', 'breakpoints', 'current_debug_state') if key in value}
+    ctx['session'] = value
     atomic_json(ctx['data_dir'] / 'session.json', value)
     atomic_json(ctx['active_path'], {'data_dir': str(ctx['data_dir']),
                                    'selection': ctx['selection'],
