@@ -28,7 +28,7 @@ class TransportTests(unittest.TestCase):
         self.assertEqual([item['name'] for item in client.tools], ['Echo'])
         result = client.call('Echo', {'value': 'hello'})
         self.assertEqual(result['structured'], {'value': 'hello'})
-        self.assertFalse(hasattr(client, 'messages'))
+        self.assertEqual(client.messages[0]['method'], 'notifications/message')
 
     def test_unknown_and_missing_fields(self):
         """Reject unsupported arguments before a tool call.
@@ -40,18 +40,17 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             client.call('Echo', {})
 
-    def test_live_validation_precedes_tool_request(self):
-        """Reject invalid fields before issuing a tool request.
-        A valid request is sent once without history callbacks.
+    def test_dispatch_marker_follows_live_validation(self):
+        """Do not mark an unsupported request as dispatched.
+        A valid request invokes its marker exactly once.
         """
-        from unittest.mock import patch
         client = self.client()
-        with patch.object(client, 'request', wraps=client.request) as request:
-            with self.assertRaises(RuntimeError):
-                client.call('Echo', {'wrong': 'x'})
-            request.assert_not_called()
-            client.call('Echo', {'value': 'x'})
-            request.assert_called_once()
+        markers = []
+        with self.assertRaises(RuntimeError):
+            client.call('Echo', {'wrong': 'x'}, before_send=lambda: markers.append('sent'))
+        self.assertEqual(markers, [])
+        client.call('Echo', {'value': 'x'}, before_send=lambda: markers.append('sent'))
+        self.assertEqual(markers, ['sent'])
 
     def test_remote_error(self):
         """Surface remote JSON-RPC errors.

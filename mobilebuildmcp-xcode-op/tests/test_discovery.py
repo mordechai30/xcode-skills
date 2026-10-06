@@ -68,7 +68,7 @@ class DiscoveryTests(unittest.TestCase):
                     'raw': json.dumps(v) if not isinstance(v, str) else v} for v in values]
         with patch.object(native, '_call', side_effect=replies) as calls:
             found = native.discover(args, ctx)
-        self.assertEqual(found['choices']['destination'], ['platform=macOS,id=host,arch=arm64e'])
+        self.assertEqual(found['choices']['destination'], ['platform=macOS,id=host'])
         self.assertEqual(found['owners']['App'], '/fixture/With Space/App.xcodeproj')
         self.assertIn('/fixture/With Space/App.xcodeproj', calls.call_args_list[0].args[0])
 

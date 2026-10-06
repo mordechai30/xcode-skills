@@ -39,9 +39,10 @@ class PackageTests(unittest.TestCase):
         """Build exactly the selected product and configuration.
         Keep a package path containing spaces as one command argument.
         """
-        ctx = {'selection': {'package': '/fixture/With Space', 'target': 'App', 'configuration': 'Release'}}
+        ctx = {'selection': {'package': '/fixture/With Space', 'target': 'App', 'configuration': 'Release'}, 'mark_build': Mock()}
         with patch.object(native, '_call', return_value={'status': 'success'}) as call:
             Adapter(native).build(Namespace(configuration='Release'), ctx)
+        ctx['mark_build'].assert_called_once()
         self.assertEqual(call.call_args.args[0], ['swift', 'build', '--package-path', '/fixture/With Space', '--configuration', 'release', '--product', 'App'])
 
     @unittest.skip("Route is not installed in this skill.")
@@ -54,9 +55,9 @@ class PackageTests(unittest.TestCase):
         self.assertTrue(adapter.apple_route(Namespace(configuration='Debug', operation='run', no_debugger=False)))
 
     @unittest.skip("Route is not installed in this skill.")
-    def test_mobile_run_is_embedded_in_only_for_debugger(self):
+    def test_mobile_run_is_embedded_in_both_configurations(self):
         """Prepare one Build attempt around Mobile package Run.
-        Debug uses the Apple bridge; Release builds then launches directly.
+        Debug uses the Apple bridge and Release uses swift_package_run.
         """
         adapter = Adapter(SimpleNamespace(__name__='backend.mobilebuildmcp'))
         for configuration in ('Debug', 'Release'):
@@ -65,7 +66,7 @@ class PackageTests(unittest.TestCase):
     @unittest.skip("Route is not installed in this skill.")
     def test_apple_destination_mismatch_blocks_operation(self):
         """Check Apple's actual destination selection before execution.
-        A different destination must not permit Build or launch.
+        A different destination must not permit Clean, Build, or launch.
         """
         adapter = Adapter(SimpleNamespace(__name__='backend.apple'))
         bridge = Mock()
@@ -108,11 +109,10 @@ class PackageTests(unittest.TestCase):
         backend = Mock()
         backend.resolve_product.return_value = {'status': 'success', 'executable': '/fixture/App'}
         backend.embedded_build.return_value = False
-        backend.select_run_route = None
         backend.launch.return_value = {'status': 'success', 'state': 'not_launched'}
         ctx = {'backend': backend, 'discovery': True, 'session': None, 'runtime': {}, 'data_dir': Path('/fixture')}
         args = Namespace(configuration='Debug')
-        with patch('operations.run.context', return_value=ctx), \
+        with patch('operations.run.context', return_value=ctx), patch('operations.run.prepare', return_value={'status': 'success'}), \
              patch('operations.run.perform', return_value={'status': 'success'}) as build, \
              patch('operations.run.finish', return_value={'status': 'success'}), \
              patch('operations.run.resolve_selection', return_value={'status': 'success'}), patch('operations.run.pending'), patch('operations.run.save_session'):

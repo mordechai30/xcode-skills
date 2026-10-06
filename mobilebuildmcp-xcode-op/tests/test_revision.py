@@ -13,13 +13,45 @@ from lifecycle.output import collect
 from operations.common import observe
 from operations.kill import execute, recover
 from operations.set_breakpoint import execute as set_breakpoint
-from lifecycle.state import atomic_json
+from lifecycle.state import atomic_json, new_log
 
 
 class RevisionTests(unittest.TestCase):
     """Check revised outcomes with disposable records and fake backends.
     No live debugger or app process is created by these tests.
     """
+    def test_same_second_log_waits_without_overwriting(self):
+        """Advance to the next filename second after a collision.
+        Preserve the first log's bytes and the exact filename format.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            start = datetime.now().astimezone().replace(microsecond=0)
+            first = folder / ('log-fixture-Debug-' + start.strftime('%y-%m-%d-%H-%M-%S') + '.txt')
+            first.write_text('preserved')
+            with patch('lifecycle.state.datetime') as clock, patch('lifecycle.state.time.sleep'):
+                clock.now.side_effect = [start, start + timedelta(seconds=1)]
+                second, _ = new_log(folder, 'fixture', 'Debug')
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.read_text(), 'preserved')
+            self.assertEqual(second.name, 'log-fixture-Debug-' + (start + timedelta(seconds=1)).strftime('%y-%m-%d-%H-%M-%S') + '.txt')
+    def test_durable_output_appends_only_new_bytes(self):
+        """Retain app output after artifact removal.
+        Repeated collection must not duplicate earlier output.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            output = folder / 'app-output.txt'
+            log = folder / 'log.txt'
+            ctx = {'log': log, 'data_dir': folder, 'runtime': {}}
+            output.write_text('hello\n')
+            collect(ctx)
+            collect(ctx)
+            output.write_text('hello\nworld\n')
+            collect(ctx)
+            output.unlink()
+            self.assertEqual(log.read_text().count('hello'), 1)
+            self.assertEqual(log.read_text().count('world'), 1)
 
     def test_resolution_is_not_a_hit(self):
         """Record actual paused breakpoint causes only.

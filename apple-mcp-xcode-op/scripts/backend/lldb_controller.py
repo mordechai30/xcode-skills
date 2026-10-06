@@ -4,9 +4,7 @@ The server uses SB state and events, and never resumes without a request.
 import json
 import os
 import socket
-import time
-import sys
-from pathlib import Path
+import threading
 import lldb
 
 
@@ -28,8 +26,8 @@ def snapshot(process):
         entry = frame.GetLineEntry()
         ids = [thread.GetStopReasonDataAtIndex(i) for i in range(0, thread.GetStopReasonDataCount(), 2)] if reason == lldb.eStopReasonBreakpoint else []
         stops.append({'thread': thread.GetThreadID(), 'reason': reason,
-                      'description': thread.GetStopDescription(120), 'breakpoints': ids,
-                      'file': str(entry.GetFileSpec()), 'line': entry.GetLine()})
+                      'description': thread.GetStopDescription(4096), 'breakpoints': ids,
+                      'frame': str(frame), 'file': str(entry.GetFileSpec()), 'line': entry.GetLine()})
     return {'status': 'success', 'state': label, 'lldb_state': state,
             'pid': process.GetProcessID(), 'stops': stops, 'exit_status': process.GetExitStatus()}
 
@@ -38,22 +36,17 @@ def handle(debugger, request, owned):
     """Perform one explicit debugger request against the owned target.
     State-changing operations are selected by operation modules.
     """
-    deadline = request.get('_deadline')
-    if deadline is not None and time.monotonic() >= deadline:
-        raise TimeoutError('Pause expired before debugger execution. Use Status.')
     action = request['action']
     target = debugger.GetSelectedTarget()
     process = target.GetProcess() if target.IsValid() else lldb.SBProcess()
     if action == 'launch':
-        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-        from lifecycle.output import capture_fifo
         target = debugger.CreateTarget(request['executable'])
         if not target.IsValid():
             raise RuntimeError('LLDB could not create the selected target.')
         launch = lldb.SBLaunchInfo(request.get('arguments', []))
         launch.SetWorkingDirectory(request['working_directory'])
-        launch.AddOpenFileAction(1, capture_fifo(os.path.abspath('app-output.pipe')), False, True)
-        launch.AddOpenFileAction(2, capture_fifo(os.path.abspath('app-error.pipe')), False, True)
+        launch.AddOpenFileAction(1, os.path.abspath('app-output.txt'), False, True)
+        launch.AddOpenFileAction(2, os.path.abspath('app-error.txt'), False, True)
         error = lldb.SBError()
         process = target.Launch(launch, error)
         if error.Fail():
@@ -87,24 +80,33 @@ def handle(debugger, request, owned):
     raise ValueError('Unsupported controller action: ' + action)
 
 
+def event_reader(listener, output, stopped):
+    """Retain native LLDB events without holding command locks.
+    Event watching does not make lifecycle decisions.
+    """
+    while not stopped.is_set():
+        event = lldb.SBEvent()
+        if listener.WaitForEvent(1, event):
+            with open(output, 'a') as stream:
+                stream.write(str(event) + '\n')
+
+
 def serve(debugger, command, result, internal_dict):
     """Keep one debugger available through a short relative socket.
     LLDB runs this command until explicit final cleanup.
     """
     debugger.SetAsync(True)
     owned = {}
+    stopped = threading.Event()
     listener = debugger.GetListener()
+    thread = threading.Thread(target=event_reader, args=(listener, 'lldb-events.txt', stopped), daemon=True)
+    thread.start()
     with socket.socket(socket.AF_UNIX) as server:
         server.bind('d.sock')
         os.chmod('d.sock', 0o600)
         server.listen(4)
-        server.settimeout(.1)
         while True:
-            consume_events(listener)
-            try:
-                channel, _ = server.accept()
-            except socket.timeout:
-                continue
+            channel, _ = server.accept()
             with channel:
                 with channel.makefile('r') as stream:
                     request = json.loads(stream.readline())
@@ -115,21 +117,12 @@ def serve(debugger, command, result, internal_dict):
                 try:
                     channel.sendall((json.dumps(value) + '\n').encode())
                 except (BrokenPipeError, ConnectionResetError):
-                    pass
+                    with open('lldb-events.txt', 'a') as stream:
+                        stream.write('Client disconnected; debugger remains available.\n')
             if request['action'] == 'close':
                 break
+    stopped.set()
     os.unlink('d.sock')
-
-
-def consume_events(listener):
-    """Deliver queued LLDB state changes without recording opaque events.
-    The owned request loop polls while idle; it creates no recorder thread.
-    """
-    event = lldb.SBEvent()
-    while listener.GetNextEvent(event):
-        if lldb.SBProcess.EventIsProcessEvent(event):
-            lldb.SBProcess.GetStateFromEvent(event)
-        event = lldb.SBEvent()
 
 
 def __lldb_init_module(debugger, internal_dict):

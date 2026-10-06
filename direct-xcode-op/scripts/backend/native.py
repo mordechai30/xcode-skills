@@ -3,14 +3,11 @@ from __future__ import annotations
 
 import json
 import os
-import platform
 from pathlib import Path
 import re
 import subprocess
-import signal
-from lifecycle.output import capture_process
 
-from lifecycle.diagnostics import record, diagnostics
+from lifecycle.state import append_log
 from backend.native_debug import launch, close, request
 
 
@@ -56,15 +53,12 @@ def _container(ctx):
 
 def _call(command, timeout=7200, cwd=None, ctx=None):
     """Run one native command with a bounded wait.
-    Keep diagnostic blocks and discard ordinary command output.
+    Retain complete output once in the local attempt log.
     """
-    streaming = ctx is not None and 'build' in command and '--show-bin-path' not in command
-    if streaming:
-        return stream_command(command, timeout, ctx, cwd=cwd)
     try:
         result = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False, cwd=cwd)
         stdout = result.stdout
-        raw = result.stdout if not result.stderr else result.stdout + result.stderr
+        raw = result.stdout + result.stderr
         status = 'success' if result.returncode == 0 else 'failure'
     except subprocess.TimeoutExpired as error:
         stdout = error.stdout or b''
@@ -75,7 +69,11 @@ def _call(command, timeout=7200, cwd=None, ctx=None):
     except OSError as error:
         stdout, raw, status = '', str(error), 'failure'
     if ctx is not None:
-        record(ctx, 'Native ' + ' '.join(str(x) for x in command[:2]), {'status': status, 'output': raw})
+        evidence = json.dumps(command) + '\n' + raw
+        if ctx.get('log'):
+            append_log(ctx['log'], 'Native command', evidence)
+        else:
+            ctx.setdefault('evidence', []).append(evidence)
     return {'status': status, 'raw': raw, 'stdout': stdout, 'command': command}
 
 
@@ -105,7 +103,7 @@ def discover(args, ctx):
     base = ["xcrun", "xcodebuild", *_container(ctx)]
     scheme = args.scheme or (schemes[0] if len(schemes) == 1 else None)
     if not scheme:
-        return {"choices": {"scheme": schemes, "target": [], "destination": []}}
+        return {"choices": {"scheme": schemes, "target": [], "destination": []}, "raw": listing}
     destination_result = _call(base + ["-scheme", scheme, "-showdestinations"], timeout=60, ctx=ctx)
     if destination_result["status"] != "success":
         raise RuntimeError("Could not discover Xcode destinations: " + destination_result["raw"])
@@ -116,12 +114,12 @@ def discover(args, ctx):
         fields = dict((key.strip(), value.strip()) for key, value in
                       re.findall(r'([^,:]+):([^,]+)', entry))
         if fields.get('platform') == 'macOS' and not fields.get('error'):
-            value = 'platform=macOS' + (',id=' + fields['id'] if fields.get('id') else '') + (',arch='+fields['arch'] if fields.get('arch') else '')
+            value = 'platform=macOS' + (',id=' + fields['id'] if fields.get('id') else '')
             if value not in destinations:
                 destinations.append(value)
-            if fields.get('name') == 'My Mac' and (not fields.get('arch') or fields['arch']==(getattr(args,'architecture',None) or platform.machine())):
+            if fields.get('name') == 'My Mac':
                 preferred = value
-    settings = _call(base + ["-scheme", scheme, "-configuration", args.configuration or "Debug", "-destination", "platform=macOS,arch="+platform.machine(), "-showBuildSettings", "-json"], timeout=60, ctx=ctx)
+    settings = _call(base + ["-scheme", scheme, "-configuration", args.configuration or "Debug", "-showBuildSettings", "-json"], timeout=60, ctx=ctx)
     if settings["status"] != "success":
         raise RuntimeError("Could not inspect selected scheme build settings: " + settings["raw"])
     try:
@@ -158,7 +156,7 @@ def discover(args, ctx):
 
 def _args(args, ctx, action):
     """Create a command from the resolved Build selection.
-    Use the selected derived-data location for Build.
+    Use the same derived-data location for Build and Clean.
     """
     selection = ctx["selection"]
     data = ctx["data_dir"]
@@ -170,13 +168,20 @@ def _args(args, ctx, action):
             "-derivedDataPath", str(derived), *architecture, action]
 
 
+def clean(args, ctx):
+    """Clean the selected scheme and configuration.
+    Capture the complete native result for prerequisite and failure handling.
+    """
+    result = _call(_args(args, ctx, "clean"), ctx=ctx)
+    return result
 
 
 def build(args, ctx):
-    """Build without launching and preserve useful diagnostics.
+    """Build without launching and preserve complete command output.
     Mark history only at the backend invocation boundary.
     """
     command = _args(args, ctx, 'build')
+    ctx['mark_build']()
     result = _call(command, ctx=ctx)
     return result
 
@@ -192,55 +197,26 @@ def resolve_product(args, ctx):
                "-showBuildSettings", "-json"]
     if selection.get('architecture'):
         command.extend(['-arch', selection['architecture']])
-    key = tuple(selection.get(field) for field in ('project','workspace','scheme','target','configuration','destination','architecture','derived_data'))
-    runtime = ctx.setdefault('runtime', {})
-    settings = runtime.get('product_settings') if runtime.get('product_context') == key else None
-    if settings is None:
+    result = ctx.setdefault('runtime', {}).get('product_settings')
+    if result is None:
         result = _call(command, timeout=60, ctx=ctx)
-        if result['status'] != 'success':
-            return {'status':result['status'],'message':diagnostics(result.get('raw','')) or 'Build settings query failed.'}
-        try:
-            rows = json.loads(result['stdout'])
-        except json.JSONDecodeError:
-            return {'status':'failure','message':'Build settings response was not JSON.'}
-        matches = [row['buildSettings'] for row in rows if row.get('target') == selection['target'] and row.get('buildSettings',{}).get('PRODUCT_TYPE') == 'com.apple.product-type.application' and row.get('buildSettings',{}).get('PLATFORM_NAME') == 'macosx']
-        if len(matches) != 1:
-            return {'status':'failure','message':f'Expected one macOS app target; found {len(matches)}.'}
-        settings = {field:matches[0][field] for field in ('TARGET_BUILD_DIR','EXECUTABLE_PATH','FULL_PRODUCT_NAME','PRODUCT_BUNDLE_IDENTIFIER') if field in matches[0]}
-        runtime.update(product_settings=settings, product_context=key)
+        ctx['runtime']['product_settings'] = result
+    if result["status"] != "success":
+        return result
+    try:
+        rows = json.loads(result["stdout"])
+    except json.JSONDecodeError:
+        return {"status": "failure", "raw": "Build settings response was not JSON."}
+    matches = [row for row in rows if row.get("target") == selection["target"] and
+               row.get("buildSettings", {}).get("PRODUCT_TYPE") == "com.apple.product-type.application" and
+               row.get("buildSettings", {}).get("PLATFORM_NAME") == "macosx"]
+    if len(matches) != 1:
+        return {"status": "failure", "raw": f"Expected one macOS app target; found {len(matches)}."}
+    settings = matches[0]["buildSettings"]
     executable = Path(settings["TARGET_BUILD_DIR"]) / settings["EXECUTABLE_PATH"]
     product = Path(settings["TARGET_BUILD_DIR"]) / settings["FULL_PRODUCT_NAME"]
     if not executable.is_file() or not os.access(executable, os.X_OK):
-        return {"status": "missing", "message": f"Selected executable is missing or not executable: {executable}",
+        return {"status": "missing", "raw": f"Selected executable is missing or not executable: {executable}",
                 "product": str(product), "executable": str(executable)}
     return {"status": "success", "target": selection["target"], "product": str(product),
             "executable": str(executable), "bundle_identifier": settings.get("PRODUCT_BUNDLE_IDENTIFIER")}
-
-
-def stream_command(command, timeout, ctx, cwd=None):
-    """Consume native Build output through diagnostic-only pipe readers.
-    Compiler transcripts are discarded instead of accumulated in memory.
-    """
-    ctx.pop('last_diagnostic', None)
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, cwd=cwd)
-    readers = len(ctx.setdefault('runtime', {}).get('stream_readers', []))
-    capture_process(process, ctx, 'Native diagnostics')
-    try:
-        code = process.wait(timeout=timeout)
-        status = 'success' if code == 0 else 'failure'
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=3)
-        status = 'uncertain'
-    for reader in ctx['runtime']['stream_readers'][readers:]:
-        reader.join(timeout=3)
-    ctx['runtime']['stream_readers'] = [reader for reader in ctx['runtime']['stream_readers'] if reader.is_alive()]
-    record(ctx, 'Native ' + ' '.join(str(value) for value in command[:2]), {'status':status})
-    value = {'status':status}
-    if status != 'success':
-        value['message'] = ctx.pop('last_diagnostic', None) or 'Native command failed or timed out.'
-    return value

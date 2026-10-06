@@ -1,6 +1,7 @@
-"""Build once and launch the selected product."""
+"""Launch the selected product after required Build preparation."""
 import json
-from operations.build import perform, finish
+from lifecycle.state import append_log
+from operations.build import prepare, perform, finish
 from operations.common import ask, context, resolve_selection, save_session
 from lifecycle.process import capture_identity
 
@@ -20,7 +21,7 @@ def pending(ctx, args, product):
     save_session(ctx, {'status': 'uncertain', 'state': 'launch_pending', 'app': None,
                       'debugger': args.configuration == 'Debug' and not args.no_debugger,
                       'dedicated': dedicated, 'selection': ctx['selection'], 'product': product,
-                      'breakpoints': []})
+                      'log': str(ctx['log']), 'breakpoints': []})
 
 
 def execute(args, root):
@@ -33,15 +34,14 @@ def execute(args, root):
     selected = resolve_selection(ctx, args) if not ctx.get('selection_ready') else {'status': 'success'}
     if selected['status'] != 'success':
         return selected
-    choose = getattr(ctx['backend'], 'select_run_route', None)
-    if choose:
-        rejected = choose(args, ctx)
-        if rejected:
-            return rejected
     embedded = getattr(ctx['backend'], 'embedded_build', lambda a: False)(args)
     product = ctx['backend'].resolve_product(args, ctx) if embedded else {}
     if embedded and product['status'] not in ('success', 'missing'):
         return ask('Selected product evidence is unavailable or uncertain.') | {'product': product}
+    ctx['runtime']['output_offsets'] = {name: (ctx['data_dir'] / name).stat().st_size for name in ('launcher-output.txt', 'app-output.txt', 'app-error.txt', 'lldb-events.txt') if (ctx['data_dir'] / name).exists()}
+    prepared = prepare(args, ctx)
+    if prepared['status'] != 'success':
+        return prepared
     if embedded:
         pending(ctx, args, product)
         outcome = ctx['backend'].launch(args, ctx, product)
@@ -51,7 +51,7 @@ def execute(args, root):
     completed = finish(args, ctx, build_result)
     if completed['status'] != 'success':
         if embedded and outcome.get('app'):
-            session = outcome | {'selection': ctx['selection'], 'breakpoints': []}
+            session = outcome | {'selection': ctx['selection'], 'log': str(ctx['log']), 'breakpoints': []}
             save_session(ctx, session)
         elif embedded and build_result['status'] == 'failure':
             save_session(ctx, None)
@@ -67,20 +67,16 @@ def execute(args, root):
         ctx['backend'].close(ctx)
         return outcome
     outcome.setdefault('debugger', args.configuration == 'Debug' and not args.no_debugger)
-    if not outcome.get('state'):
-        outcome['state'] = 'uncertain'
-    if outcome.get('status') == 'uncertain' and not outcome.get('message'):
-        outcome['message'] = 'Launch verification is incomplete. Use Status before another Run.'
+    outcome.setdefault('state', 'uncertain')
+    append_log(ctx['log'], 'Launch result', json.dumps({key: outcome.get(key) for key in ('status', 'state', 'app', 'debugger', 'attachment_verified', 'message')}))
     if ctx.get('session'):
         recorded = ctx['session']['dedicated']
         outcome['dedicated'] = list({entry['pid']: entry for entry in recorded + outcome.get('dedicated', []) if entry}.values())
     session = outcome | {'selection': ctx['selection'], 'product': product,
-                         'breakpoints': []}
-    if outcome.get('app') or outcome.get('dedicated') or outcome['status'] == 'uncertain' or outcome['state'] == 'exited':
+                         'log': str(ctx['log']), 'breakpoints': []}
+    if outcome.get('app') or outcome.get('dedicated') or outcome['status'] == 'uncertain':
         save_session(ctx, session)
     else:
         save_session(ctx, None)
         ctx['backend'].close(ctx)
-    if (outcome.get('app') or {}).get('pid'):
-        outcome['pid'] = outcome['app']['pid']
-    return {key: outcome[key] for key in ('status', 'state', 'pid', 'debugger', 'message') if key in outcome}
+    return {key: outcome[key] for key in ('status', 'state', 'app', 'debugger', 'attachment_verified', 'message') if key in outcome} | {'log': str(ctx['log'])}

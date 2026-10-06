@@ -9,9 +9,7 @@ from backend import native
 from backend.apple_mcp import MCPClient
 from lifecycle.process import capture_identity, verify_identity, traced
 from lifecycle.schemes import configured
-from lifecycle.diagnostics import record, diagnostics
-from lifecycle.state import atomic_json
-from lifecycle.output import record_detail
+from lifecycle.state import append_log, atomic_json
 
 
 def discover(args, ctx):
@@ -30,9 +28,6 @@ def client(ctx):
     if 'bridge' not in ctx['runtime']:
         factory = ctx.get('bridge_factory', MCPClient)
         ctx['runtime']['bridge'] = factory()
-        sink = getattr(ctx['runtime']['bridge'], 'set_diagnostic_sink', None)
-        if sink:
-            sink(lambda detail: record_detail(ctx, 'Apple diagnostics', detail))
     return ctx['runtime']['bridge']
 
 
@@ -46,11 +41,11 @@ class ToolError(RuntimeError):
         """
         # Original remote result used to distinguish failure from uncertainty.
         self.response = response
-        super().__init__(diagnostic_message(response) if not response.get('raw') else (diagnostics(response['raw']) or response['raw'].splitlines()[0])[:500])
+        super().__init__(response['raw'])
 
 
 def decode(value):
-    """Extract one structured Apple result and preserve error evidence.
+    """Extract structured Apple results without losing raw responses.
     Text JSON is accepted when structuredContent is absent.
     """
     if value.get('isError'):
@@ -65,25 +60,31 @@ def decode(value):
                 except json.JSONDecodeError:
                     continue
     if not isinstance(data, dict):
-        raise RuntimeError('Apple result has no usable structured evidence: ' + diagnostic_message(value))
+        raise RuntimeError('Apple result has no usable structured evidence: ' + value['raw'])
     return data
 
 
 def call(ctx, name, arguments=None):
     """Invoke one live-schema tool on the retained workspace connection.
-    Only useful diagnostics reach the public response.
+    Requests and complete responses are appended to the operation log.
     """
     arguments = dict(arguments or {})
     if name != 'XcodeOpenWorkspace' and ctx['runtime'].get('workspace'):
         arguments['workspaceIdentifier'] = ctx['runtime']['workspace']
     connection = client(ctx)
+    marker = ctx.get('mark_build') if name in ('BuildProject', 'RunProject') else None
     try:
-        value = connection.call(name, arguments, 
-                                timeout=request_timeout(ctx, 60 if name in ('BuildProject', 'RunProject', 'XcodeOpenWorkspace') else 15))
+        value = connection.call(name, arguments, before_send=marker,
+                                timeout=60 if name in ('BuildProject', 'RunProject') else 15)
     except (RuntimeError, OSError, TimeoutError) as error:
-        raise type(error)(name + ': ' + str(error)) from error
-    # Debugger output belongs only in the bounded public response.
-    record(ctx, name, {} if name == 'InvokeDebuggerCommand' else value)
+        if ctx.get('log'):
+            append_log(ctx['log'], name, json.dumps({'arguments': arguments, 'error': str(error)}))
+        raise
+    evidence = name + ' ' + json.dumps(arguments) + '\n' + value['raw']
+    if ctx.get('log'):
+        append_log(ctx['log'], 'Backend response', evidence)
+    else:
+        ctx.setdefault('evidence', []).append(evidence)
     return decode(value)
 
 
@@ -135,7 +136,7 @@ def setup(ctx):
 
 def settings(ctx):
     """Read the selected target's actual Apple Build context.
-    Configuration mismatch prevents Build and product claims.
+    Configuration mismatch prevents Build, Clean, and product claims.
     """
     setup(ctx)
     if ctx['runtime'].get('apple_settings'):
@@ -146,11 +147,12 @@ def settings(ctx):
         macros = {row['macroName']: row.get('evaluatedValue', row.get('value')) for row in rows}
         if macros.get('CONFIGURATION') and macros['CONFIGURATION'] != ctx['selection']['configuration']:
             raise RuntimeError('Existing scheme uses ' + str(macros.get('CONFIGURATION')) + '; requested ' + ctx['selection']['configuration'] + '. Select a matching scheme.')
+        if not macros.get('OBJROOT') or not macros.get('SYMROOT'):
+            raise RuntimeError('Apple settings omitted the actual Build roots needed for native Clean.')
         selection = ctx['selection']
         command = ['xcrun', 'xcodebuild', *native._container(ctx), '-scheme', selection['scheme'],
                    '-configuration', selection['configuration'], '-destination', ctx['runtime']['native_destination'],
-                   '-showBuildSettings', '-json']
-        command.extend(key+'='+macros[key] for key in ('OBJROOT','SYMROOT') if macros.get(key))
+                   'OBJROOT=' + macros['OBJROOT'], 'SYMROOT=' + macros['SYMROOT'], '-showBuildSettings', '-json']
         if selection.get('generated_scheme'):
             index = command.index('-configuration')
             del command[index:index + 2]
@@ -164,9 +166,8 @@ def settings(ctx):
                and row.get('CONFIGURATION') == ctx['selection']['configuration']]
     if len(matches) != 1:
         raise RuntimeError('Apple build settings do not establish exactly one app in the selected configuration.')
-    fields = ('TARGET_BUILD_DIR','EXECUTABLE_PATH','FULL_PRODUCT_NAME','CONFIGURATION')
-    ctx['runtime']['apple_settings'] = {key:matches[0][key] for key in fields if key in matches[0]}
-    return ctx['runtime']['apple_settings']
+    ctx['runtime']['apple_settings'] = matches[0]
+    return matches[0]
 
 
 def resolve_product(args, ctx):
@@ -180,6 +181,19 @@ def resolve_product(args, ctx):
             'executable': str(executable), 'product': str(product), 'configuration': values['CONFIGURATION']}
 
 
+def clean(args, ctx):
+    """Clean with native xcodebuild using the actual Apple Build paths.
+    An unavailable context blocks Clean instead of substituting a location.
+    """
+    values = settings(ctx)
+    selection = ctx['selection']
+    command = ['xcrun', 'xcodebuild', *native._container(ctx), '-scheme', selection['scheme'],
+               '-configuration', selection['configuration'], '-destination', ctx['runtime']['native_destination']]
+    for key in ('SYMROOT', 'OBJROOT', 'CONFIGURATION_BUILD_DIR'):
+        if key not in values:
+            raise RuntimeError('Apple Clean context is missing ' + key)
+        command.append(key + '=' + values[key])
+    return native._call(command + ['clean'], ctx=ctx)
 
 
 def build_evidence(value):
@@ -188,30 +202,20 @@ def build_evidence(value):
     """
     errors = value.get('errors', value.get('buildErrors', []))
     if any(item.get('classification', '').lower() == 'error' for item in errors):
-        return {'status':'failure','message':diagnostics(value) or str(value.get('buildResult') or value.get('error') or 'Build failed.')}
+        return {'status': 'failure', 'raw': value}
     text = value.get('buildResult', '').lower()
     if 'fail' in text:
-        return {'status':'failure','message':diagnostics(value) or str(value.get('buildResult') or value.get('error') or 'Build failed.')}
+        return {'status': 'failure', 'raw': value}
     if 'succeed' in text or 'success' in text:
-        return {'status':'success'}
+        return {'status': 'success', 'raw': value}
     path = value.get('fullLogPath')
     if path and Path(path).is_file():
-        tail = ''
-        outcome = None
-        with Path(path).open(errors='replace') as stream:
-            while True:
-                chunk = stream.read(4096)
-                if not chunk:
-                    break
-                text = tail + chunk
-                succeeded = text.rfind('** BUILD SUCCEEDED **')
-                failed = text.rfind('** BUILD FAILED **')
-                if max(succeeded, failed) >= 0:
-                    outcome = 'success' if succeeded > failed else 'failure'
-                tail = text[-32:]
-        if outcome:
-            return {'status':outcome, **({'message':diagnostics(value) or 'Build failed.'} if outcome == 'failure' else {})}
-    return {'status':'uncertain','message':'Build outcome was not verified.'}
+        log = Path(path).read_text(errors='replace')
+        if '** BUILD FAILED **' in log:
+            return {'status': 'failure', 'raw': value}
+        if '** BUILD SUCCEEDED **' in log:
+            return {'status': 'success', 'raw': value}
+    return {'status': 'uncertain', 'raw': value}
 
 
 def build(args, ctx):
@@ -220,16 +224,11 @@ def build(args, ctx):
     """
     settings(ctx)
     try:
-        evidence = build_evidence(call(ctx, 'BuildProject'))
-        if evidence['status'] in ('success', 'failure'):
-            reported = build_evidence(call(ctx, 'GetBuildLog', {'severity':'warning'}))
-            if reported['status'] == 'failure':
-                evidence = reported
-        return evidence
+        return build_evidence(call(ctx, 'BuildProject'))
     except ToolError as error:
         value = error.response.get('structured')
         evidence = build_evidence(value) if isinstance(value, dict) else {'status': 'uncertain'}
-        return evidence
+        return evidence | {'raw': error.response}
     except (RuntimeError, OSError, TimeoutError) as error:
         return {'status': 'uncertain', 'message': str(error)}
 
@@ -267,7 +266,7 @@ def launch(args, ctx, product):
     if direct_evidence['status'] == 'failure':
         return {'status': 'failure', 'state': 'not_launched', 'build': direct_evidence, 'launch': value,
                 'debugger': debug, 'app': ctx.get('session', {}).get('app')}
-    evidence = build_evidence(call(ctx, 'GetBuildLog', {'severity':'warning'}))
+    evidence = build_evidence(call(ctx, 'GetBuildLog'))
     resolved = resolve_product(args, ctx)
     pid = value.get('processIdentifier')
     identity = capture_identity(pid) if pid else None
@@ -305,24 +304,21 @@ def launch(args, ctx, product):
 
 def debug_action(ctx, action, **values):
     """Send an operation through InvokeDebuggerCommand without another controller.
-    SB queries return compact state without retaining debugger transcripts.
+    SB queries return structured state and preserve all raw bridge output.
     """
+    if action == 'command':
+        response = call(ctx, 'InvokeDebuggerCommand', {'command': values['command'], 'timeout': 2})
+        return {'status': 'uncertain' if response['isWaitingForMore'] else 'success', 'response': response}
     script = Path(__file__).with_name('lldb_controller.py')
-    request = json.dumps({'action': action, '_deadline':ctx.get('request_deadline'), **values})
-    setup = ''
-    if not ctx['runtime'].get('sb_helper_loaded'):
-        setup = ('import importlib.util,json,lldb; '
-                 f's=importlib.util.spec_from_file_location("skill_ops",{str(script)!r}); '
-                 '_skill_ops=importlib.util.module_from_spec(s); s.loader.exec_module(_skill_ops); ')
-    if setup:
-        ctx['runtime']['sb_helper_loaded'] = True
-        record(ctx, 'Debugger helper setup submitted', {'status':'success'})
-    code = setup + f'print("SKILL_RESULT="+json.dumps(_skill_ops.handle(lldb.debugger,json.loads({request!r}),{{}})))'
-    response = call(ctx, 'InvokeDebuggerCommand', {'command':'script ' + code, 'timeout':2})
+    request = json.dumps({'action': action, **values})
+    code = ('import importlib.util,json,lldb; '
+            f's=importlib.util.spec_from_file_location("skill_ops",{str(script)!r}); '
+            'm=importlib.util.module_from_spec(s); s.loader.exec_module(m); '
+            f'print("SKILL_RESULT="+json.dumps(m.handle(lldb.debugger,json.loads({request!r}),{{}})))')
+    response = call(ctx, 'InvokeDebuggerCommand', {'command': 'script ' + code, 'timeout': 2})
     output = response['output']
     for line in reversed(output.splitlines()):
         if line.startswith('SKILL_RESULT='):
-            ctx['runtime']['sb_helper_loaded'] = True
             return json.loads(line[len('SKILL_RESULT='):])
     return {'status': 'uncertain', 'message': 'Debugger response has no completed result.', 'response': response}
 
@@ -331,21 +327,14 @@ def debug_status(ctx):
     """Query current process state through the retained bridge.
     Report partial or lost connection evidence without reattaching.
     """
-    value = debug_action(ctx,'status')
-    # A startup helper can finish after the outer tool's partial reply.
-    # Re-query state once; never repeat a mutation or replace the debugger.
-    if value.get('status')=='uncertain' and not value.get('state') and value.get('response',{}).get('isWaitingForMore'):
-        value = debug_action(ctx,'status')
-    return value
+    return debug_action(ctx, 'status')
 
 
 def stop(ctx):
     """Terminate the app through its owning Apple workspace.
     Process disappearance is checked by the Kill operation.
     """
-    call(ctx, 'StopProject')
-    ctx['runtime'].pop('sb_helper_loaded', None)
-    return {'status':'success'}
+    return {'status': 'success', 'raw': call(ctx, 'StopProject')}
 
 
 def close(ctx):
@@ -356,23 +345,3 @@ def close(ctx):
     connection = ctx['runtime'].pop('bridge', None)
     if connection:
         connection.close()
-
-
-def request_timeout(ctx, limit):
-    """Use remaining submission time for Pause backend requests.
-    Expired actions cannot be sent after waiting in the runtime queue.
-    """
-    deadline = ctx.get('request_deadline')
-    remaining = min(limit, deadline - time.monotonic()) if deadline is not None else limit
-    if remaining <= 0:
-        raise TimeoutError('Pause expired. Use Status.')
-    return remaining
-
-
-def diagnostic_message(value):
-    """Extract a cause without serializing a complete backend response.
-    Prefer structured errors to rendered content.
-    """
-    detail = diagnostics(value)
-    data = value.get('structured') or {}
-    return detail or str(data.get('error') or data.get('message') or 'Backend result is incomplete.')

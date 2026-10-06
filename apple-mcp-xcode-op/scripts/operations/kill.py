@@ -1,7 +1,7 @@
 """Terminate app first, then verified dedicated debugger processes."""
 from pathlib import Path
 from lifecycle.process import capture_identity, terminate_identity, verify_identity, matching_processes
-from lifecycle.state import read_json, atomic_json, remove_closed_channels
+from lifecycle.state import append_log, read_json
 from operations.common import ask, context, save_session
 from lifecycle.output import collect
 
@@ -15,11 +15,20 @@ def execute(args, root):
     if not session:
         return ask('No recorded session is available for Kill.')
     app = session.get('app')
-    app_unknown = False
     if not app and session.get('state') in ('launch_pending', 'uncertain'):
+        if session.get('debugger'):
+            try:
+                state = ctx['backend'].debug_status(ctx)
+            except (RuntimeError, OSError, TimeoutError):
+                state = {'state': 'uncertain'}
+            candidate = capture_identity(state.get('pid', -1))
+            if candidate and verify_identity(candidate, session['product']['executable']):
+                app = candidate
+                session['app'] = candidate
+                save_session(ctx, session)
         executable = session.get('product', {}).get('executable')
         if not app and (not executable or matching_processes(executable)):
-            app_unknown = True
+            return ask('Launch outcome has no verified app identity. Reconcile it before claiming cleanup.')
     parent = capture_identity(app['parentPID']) if app else None
     breakpoints = []
     if session.get('debugger'):
@@ -38,38 +47,27 @@ def execute(args, root):
     except (RuntimeError, OSError, TimeoutError) as error:
         backend = {'status': 'failure', 'message': str(error)}
     app_result = terminate_identity(app) if app else {'status': 'success', 'reason': 'already exited'}
-    if app_result['status'] == 'zombie' and app_result.get('identity', {}).get('parentPID') == 1:
-        app_result = {'status':'success','reason':'terminated; defunct entry awaits system reaping'}
     dedicated = [record for record in session.get('dedicated', []) if record]
     if app_result['status'] == 'zombie' and parent and parent['pid'] != ctx.get('runtime_identity', {}).get('pid'):
         if not any(record['pid'] == parent['pid'] and verify_identity(record) for record in dedicated):
             return ask('App is a zombie under a parent not verified as dedicated. Select parent cleanup.') | {'app': app_result, 'parent': parent}
     collect(ctx)
-    try:
-        ctx['backend'].close(ctx)
-    except (RuntimeError, OSError, TimeoutError) as error:
-        from lifecycle.output import record_detail
-        record_detail(ctx, 'Diagnostics', 'error: '+str(error))
+    ctx['backend'].close(ctx)
     collect(ctx)
     helpers = [terminate_identity(record) for record in dedicated]
-    if app and capture_identity(app['pid']) is not None and app_result.get('reason') != 'terminated; defunct entry awaits system reaping':
+    if app and capture_identity(app['pid']) is not None:
         child = ctx['runtime'].get('app_child')
         if child and child.poll() is not None:
             child.wait()
         app_result = terminate_identity(app)
-    complete = not app_unknown and app_result['status'] == 'success' and all(value['status'] == 'success' for value in helpers)
-    warning = 'IDE breakpoint may remain.' if any(value['status'] != 'success' for value in breakpoints) else None
+    complete = app_result['status'] == 'success' and all(value['status'] == 'success' for value in helpers)
+    warning = 'Breakpoint removal was not verified; an IDE breakpoint may remain.' if any(value['status'] != 'success' for value in breakpoints) else None
     if complete:
         save_session(ctx, None)
-    elif app_unknown:
-        session['state'] = 'uncertain'
-        session['dedicated'] = [record for record, result in zip(dedicated, helpers) if result['status'] != 'success']
-        save_session(ctx, session)
-    return {'status': 'success' if complete else 'uncertain', 'stage':'kill',
-            'helpers':'terminated' if all(value['status'] == 'success' for value in helpers) else 'unverified',
-            'app': 'unverified' if app_unknown else 'terminated' if app_result['status'] == 'success' else 'unverified', 'dedicated': helpers, 'breakpoints': breakpoints,
+    return {'status': 'success' if complete else 'needs_user_input',
+            'backend': backend, 'app': app_result, 'dedicated': helpers, 'breakpoints': breakpoints,
             'warning': warning,
-            'message': 'Cleanup complete.' if complete else 'App cleanup is unverified. Reconcile app state before another Run.'}
+            'message': ('Cleanup complete. ' + warning if warning else 'Cleanup complete.') if complete else 'Cleanup remains incomplete.'}
 
 
 def recover(root, locator):
@@ -78,44 +76,32 @@ def recover(root, locator):
     """
     folder = Path(locator['data_dir'])
     session = read_json(folder / 'session.json')
-    session = session or {}
-    if session.get('state') == 'closed':
-        root.joinpath('.active-session.json').unlink(missing_ok=True)
-        folder.joinpath('m.sock').unlink(missing_ok=True)
-        return {'status':'success','stage':'kill','app':'terminated','helpers':'terminated'}
-    app = session.get('app')
-    executable = session.get('product', {}).get('executable')
-    app_unknown = not app and session.get('state') != 'exited' and (not executable or bool(matching_processes(executable)))
-    parent = capture_identity(app['parentPID']) if app else None
-    app_result = terminate_identity(app) if app else {'status':'success'}
-    if app_result['status'] == 'zombie' and app_result.get('identity', {}).get('parentPID') == 1:
-        app_result = {'status':'success','reason':'terminated; defunct entry awaits system reaping'}
+    if not session or not session.get('app'):
+        return ask('Lost context has no verified app record. Inspect launch evidence before cleanup.')
+    app = session['app']
+    parent = capture_identity(app['parentPID'])
+    app_result = terminate_identity(app)
     owned = [entry for entry in session.get('dedicated', []) if entry]
     runtime = locator.get('runtime_identity')
     if runtime:
         owned.append(runtime)
     if app_result['status'] == 'zombie' and parent and not any(entry['pid'] == parent['pid'] and verify_identity(entry) for entry in owned):
         return ask('Zombie parent is not verified as dedicated. Select parent cleanup.') | {'app': app_result, 'parent': parent}
-    owned.sort(key=lambda entry: entry['pid'] != (app or {}).get('parentPID'))
+    owned.sort(key=lambda entry: entry['pid'] != app['parentPID'])
     helpers = [terminate_identity(entry) for entry in owned]
     for index, entry in enumerate(owned):
         if capture_identity(entry['pid']) is None:
             helpers[index] = {'status': 'success', 'reason': 'dedicated process disappeared'}
-    fresh = capture_identity(app['pid']) if app else None
+    fresh = capture_identity(app['pid'])
     if not fresh:
         app_result = {'status': 'success', 'reason': 'app disappeared'}
-    complete = not app_unknown and app_result['status'] == 'success' and all(entry['status'] == 'success' for entry in helpers)
-    result = {'status': 'success' if complete else 'uncertain', 'stage':'kill',
-              'app':'terminated' if complete else 'unverified', 'helpers':'terminated' if all(entry['status'] == 'success' for entry in helpers) else 'unverified',
-              'warning': 'IDE breakpoint may remain.' if session.get('breakpoints') else None,
-              'message': 'Recovered cleanup complete.' if complete else 'Recovered cleanup remains incomplete.'}
+    complete = app_result['status'] == 'success' and all(entry['status'] == 'success' for entry in helpers)
+    result = {'status': 'success' if complete else 'needs_user_input', 'app': app_result, 'dedicated': helpers,
+              'warning': 'Breakpoint removal was not verified; an IDE breakpoint may remain.' if session.get('breakpoints') else None,
+              'message': ('Recovered cleanup complete. ' + ('Breakpoint removal unverified; an IDE breakpoint may remain.' if session.get('breakpoints') else '')) if complete else 'Recovered cleanup remains incomplete.'}
+    if session.get('log'):
+        collect({'log': Path(session['log']), 'data_dir': folder, 'runtime': {}})
+        append_log(Path(session['log']), 'Kill recovery', str(result))
     if complete:
-        remove_closed_channels(folder)
-        atomic_json(folder / 'session.json', {'state':'closed','configuration':session.get('selection',{}).get('configuration'),'app':'terminated','helpers':'terminated'})
         root.joinpath('.active-session.json').unlink(missing_ok=True)
-        folder.joinpath('m.sock').unlink(missing_ok=True)
-    else:
-        session['state'] = 'uncertain'
-        session['dedicated'] = [entry for entry, value in zip(owned, helpers) if value['status'] != 'success']
-        atomic_json(folder / 'session.json', session)
     return result

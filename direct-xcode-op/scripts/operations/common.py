@@ -27,19 +27,6 @@ def context(args, root):
     if getattr(args, '_context', None) is not None:
         return args._context
     package = getattr(args, 'package', None)
-    native_launch = root.name == 'direct-xcode-op' or (root.name == 'apple-mcp-xcode-op' and package and args.configuration == 'Release')
-    debug_bridge = args.configuration == 'Debug' and not getattr(args, 'no_debugger', False)
-    rejected = []
-    if root.name == 'apple-mcp-xcode-op' and not native_launch:
-        rejected = ['arguments', 'working_directory', 'derived_data', 'architecture']
-    elif root.name == 'mobilebuildmcp-xcode-op':
-        rejected = ['working_directory'] + (['arguments', 'derived_data', 'architecture'] if debug_bridge and args.operation == 'run' else [])
-    for key in rejected:
-        if getattr(args, key, None) is not None:
-            raise ValueError('This route does not accept --' + key.replace('_', '-') + '. Omit that option.')
-    working = getattr(args, 'working_directory', None)
-    if working is not None and not working.is_dir():
-        raise ValueError('--working-directory requires an existing directory.')
     container = args.project or args.workspace or package
     if not container or not container.exists():
         raise ValueError('Select an existing project or workspace.')
@@ -51,19 +38,17 @@ def context(args, root):
     selection.update(project=str(args.project.resolve()) if args.project else None,
                      workspace=str(args.workspace.resolve()) if args.workspace else None,
                      derived_data=str(args.derived_data.resolve()) if args.derived_data else None)
-    selection['arguments'] = getattr(args, 'arguments', None)
     adapter = backend(root)
     if package:
         if getattr(args, 'derived_data', None) or getattr(args, 'architecture', None):
             raise ValueError('SwiftPM uses the current host and its backend build location; omit --derived-data and --architecture.')
         package = package.resolve()
-        if not package.is_dir():
-            raise ValueError('--package requires the directory containing Package.swift.')
+        package = package.parent if package.name == 'Package.swift' else package
         if not (package / 'Package.swift').is_file():
             raise ValueError('Select a Swift package with Package.swift.')
         from backend.package_selected import Adapter
         adapter = Adapter(adapter)
-        selection.update(package=str(package), arguments=getattr(args, 'arguments', None))
+        selection.update(package=str(package), arguments=getattr(args, 'arguments', []))
     return {'root': root, 'skill': root.name, 'selection': selection,
             'backend': adapter, 'active_path': root / '.active-session.json',
             'runtime': {}, 'session': None}
@@ -127,20 +112,15 @@ def save_session(ctx, value):
     """
     ctx['session'] = value
     if value is None:
-        if ctx.get('data_dir'):
-            from lifecycle.state import remove_closed_channels
-            remove_closed_channels(ctx['data_dir'])
-            atomic_json(ctx['data_dir'] / 'session.json', {'state':'closed','configuration':ctx['selection'].get('configuration'),'app':'terminated','helpers':'terminated'})
         ctx['active_path'].unlink(missing_ok=True)
         return
-    if value.get('selection'):
-        value['selection'] = {key:item for key,item in value['selection'].items() if key != 'arguments'}
     if value.get('product'):
         value['product'] = {key: value['product'][key] for key in ('status', 'product', 'executable', 'configuration', 'target', 'bundle_identifier') if key in value['product']}
-    value = {key: value[key] for key in ('status', 'state', 'app', 'debugger', 'dedicated', 'selection', 'product', 'breakpoints', 'current_debug_state') if key in value}
+    value = {key: value[key] for key in ('status', 'state', 'app', 'debugger', 'dedicated', 'selection', 'product', 'log', 'breakpoints', 'current_debug_state') if key in value}
     ctx['session'] = value
     atomic_json(ctx['data_dir'] / 'session.json', value)
     atomic_json(ctx['active_path'], {'data_dir': str(ctx['data_dir']),
+                                   'selection': ctx['selection'],
                                    'runtime_identity': ctx.get('runtime_identity')})
 
 
@@ -154,7 +134,7 @@ def debug_context(args, root):
         raise ValueError('This operation requires a debugger-enabled Debug session.')
     state = ctx['backend'].debug_status(ctx)
     if state.get('status') != 'success':
-        raise RuntimeError('Debugger state is unavailable. Use Status or Kill.')
+        raise RuntimeError('The retained debugger did not provide verified current state: ' + str(state))
     app = session.get('app')
     if app and state.get('state') != 'exited' and state.get('pid') != app['pid']:
         raise RuntimeError('The debugger process differs from the recorded app. No external session will be adopted.')
@@ -171,25 +151,11 @@ def observe(ctx, state):
     session = ctx.get('session')
     if not session or state.get('status') != 'success':
         return
-    compact = {key: state[key] for key in ('status','state','pid','exit_status') if key in state}
-    compact['stops'] = [{key: item[key] for key in ('thread','reason','breakpoints','file','line') if key in item} for item in state.get('stops', [])]
-    session['current_debug_state'] = compact
+    session['current_debug_state'] = state
     session['state'] = state.get('state', session.get('state'))
     for breakpoint in session.get('breakpoints', []):
         causes = {number for stop in state.get('stops', []) for number in stop.get('breakpoints', [])}
         if state.get('state') == 'paused' and breakpoint['id'] in causes:
             breakpoint['hit'] = True
-            breakpoint['last_stop'] = stop_fields(state)
+            breakpoint['last_stop'] = state
     save_session(ctx, session)
-
-
-def stop_fields(state):
-    """Extract a short observed stop location without retaining frame dumps.
-    Breakpoint stops take precedence when several threads stopped.
-    """
-    fields = {'state': state.get('state') or 'uncertain'}
-    stops = state.get('stops', [])
-    stop = next((item for item in stops if item.get('breakpoints')), stops[0] if stops else {})
-    if stop.get('file') and stop.get('line'):
-        fields['location'] = Path(stop['file']).name + ':' + str(stop['line'])
-    return fields
