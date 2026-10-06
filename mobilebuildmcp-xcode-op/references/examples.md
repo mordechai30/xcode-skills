@@ -12,16 +12,16 @@ Run outside sandbox restrictions. `--configuration Debug|Release` and one contai
 | `--scheme NAME`, `--target NAME` | Xcode selection; omit when unique |
 | `--product NAME` | Package executable; omit when unique |
 | `--destination VALUE` | Returned destination; My Mac for local Run |
-| `--arguments ARG…` | Supported Run routes; put last; explicit replacement |
-| `--working-directory DIR` | Supported native routes; default executable folder |
-| `--derived-data DIR` | Supported Xcode routes; default skill artifact folder/DerivedData |
-| `--architecture arm64\|x86_64` | Supported Xcode routes; default discovered destination |
+| `--arguments ARG…` | Run without a debugger; put last; replaces saved arguments |
+| `--working-directory DIR` | Not supported |
+| `--derived-data DIR` | Xcode Build and debugger-free Run; default skill artifact folder/DerivedData |
+| `--architecture arm64\|x86_64` | Xcode Build and debugger-free Run; default discovered destination |
 | `--no-debugger` | Debug Run without a debugger |
 | `--file PATH --line NUMBER` | Breakpoint; existing file and positive line |
 | `--keep-breakpoint` | Continue and watch the next hit |
 | `--command TEXT --detail` | Requested inspection with optional 500-byte limit |
 
-Debug with a debugger rejects launch/build overrides. Debug without a debugger and Release accept `--arguments`; Xcode also accepts `--derived-data` and `--architecture`. Working-directory overrides are unsupported.
+Debugger-enabled Debug Run rejects `--arguments`, `--derived-data`, and `--architecture`. Debugger-free Run and Release Run accept `--arguments`; Xcode Build and debugger-free Run also accept `--derived-data` and `--architecture`. Working-directory overrides are unsupported. SwiftPM does not accept `--derived-data` or `--architecture`.
 Do not use package `--scheme` or `--target`, or Xcode `--product`. Unsupported and irrelevant inputs fail before compilation.
 
 ## Build and Run

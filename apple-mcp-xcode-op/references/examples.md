@@ -11,17 +11,17 @@ Run outside sandbox restrictions. `--configuration Debug|Release` and one contai
 | `--package DIR` | Folder containing Package.swift |
 | `--scheme NAME`, `--target NAME` | Xcode selection; omit when unique |
 | `--product NAME` | Package executable; omit when unique |
-| `--destination VALUE` | Returned destination; My Mac for local Run |
-| `--arguments ARG…` | Supported Run routes; put last; explicit replacement |
-| `--working-directory DIR` | Supported native routes; default executable folder |
-| `--derived-data DIR` | Supported Xcode routes; default skill artifact folder/DerivedData |
-| `--architecture arm64\|x86_64` | Supported Xcode routes; default discovered destination |
+| `--destination VALUE` | Use a returned destination. Local Run requires My Mac on Apple/Xcode routes; native SwiftPM Release uses the current Mac. |
+| `--arguments ARG…` | SwiftPM Release Run only; put last; replaces saved arguments |
+| `--working-directory DIR` | SwiftPM Release Run only; default is executable folder |
+| `--derived-data DIR` | Not accepted by this skill |
+| `--architecture arm64\|x86_64` | Not accepted by this skill |
 | `--no-debugger` | Debug Run without a debugger |
 | `--file PATH --line NUMBER` | Breakpoint; existing file and positive line |
 | `--keep-breakpoint` | Continue and watch the next hit |
 | `--command TEXT --detail` | Requested inspection with optional 500-byte limit |
 
-Xcode and SwiftPM Debug reject launch/build overrides. Use saved scheme arguments. SwiftPM Release accepts `--arguments` and `--working-directory`.
+Apple Xcode routes and SwiftPM Debug Run reject explicit launch/build overrides; Xcode accepts `--destination`. SwiftPM Release Run accepts `--arguments` and `--working-directory`. This skill does not accept `--derived-data` or `--architecture`.
 Do not use package `--scheme` or `--target`, or Xcode `--product`. Unsupported and irrelevant inputs fail before compilation.
 
 ## Build and Run
