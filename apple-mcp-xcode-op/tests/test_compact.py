@@ -22,7 +22,7 @@ class CompactTests(unittest.TestCase):
     """Check observable response and context behavior.
     Large fixture envelopes must never escape the public emitter.
     """
-    def test_normal_utf8_budget_and_json(self):
+    def test_normal_utf8_budget_and_text(self):
         """Bound successful responses despite huge internal evidence.
         Include Unicode and long paths in otherwise valid outcomes.
         """
@@ -31,8 +31,8 @@ class CompactTests(unittest.TestCase):
                      'app': {'pid': 1234}, 'debugger': True, 'state': 'running', 'log': '/long/' + 'x' * 500 + '.txt'}
             text = render(value, op)
             self.assertLessEqual(len(text.encode()), 200)
-            self.assertEqual(json.loads(text)['status'], 'success')
-            self.assertNotIn('raw', json.loads(text))
+            self.assertTrue('succeeded' in text or 'Breakpoint set.' in text)
+            self.assertNotIn('/long/',text)
 
     def test_errors_help_and_requested_inspection(self):
         """Keep exceptional output and its newline within 500 bytes.
@@ -41,12 +41,12 @@ class CompactTests(unittest.TestCase):
         for message in ('界😀' * 10000, '\\"\n' * 10000):
             text = render({'status': 'failure', 'message': message})
             self.assertLessEqual(len(text.encode()), 500)
-            self.assertTrue(json.loads(text)['omitted'])
+            self.assertIn('…',text)
         value = {'status': 'success', 'output': 'tick = 123\n' * 1000,
                  'current': {'state': 'paused', 'stops': [{'description': 'breakpoint'}]}}
         text = render(value, 'debugger-command')
         self.assertLessEqual(len(text.encode()), 500)
-        self.assertIn('tick = 123', json.loads(text)['message'])
+        self.assertIn('tick = 123',text)
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             emit({'status': 'success', 'message': 'ok'})
@@ -54,7 +54,7 @@ class CompactTests(unittest.TestCase):
 
     def test_cli_help_and_argument_errors_are_bounded(self):
         """Exercise the actual public CLI without an app session.
-        Help and oversized invalid arguments produce one JSON response.
+        Help and oversized invalid arguments produce one text response.
         """
         import subprocess
         manager = location / 'scripts/manager.py'
@@ -64,21 +64,8 @@ class CompactTests(unittest.TestCase):
             process = subprocess.run([sys.executable, str(manager), *arguments], capture_output=True)
             self.assertLessEqual(len(process.stdout) + len(process.stderr), limit)
             self.assertFalse(process.stderr)
-            json.loads(process.stdout)
+            self.assertTrue(process.stdout.decode().strip())
 
-    def test_native_evidence_is_logged_once(self):
-        """Capture one backend result at its receiving boundary.
-        The result is not logged again by operation wrappers.
-        """
-        from backend.native import _call
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as folder:
-            log = Path(folder) / 'log.txt'
-            ctx = {'log': log}
-            result = Namespace(returncode=0, stdout='unique-native-evidence', stderr='')
-            with patch('backend.native.subprocess.run', return_value=result):
-                _call(['fixture'], ctx=ctx)
-            self.assertEqual(log.read_text().count('unique-native-evidence'), 1)
 
     def test_cached_discovery_and_destination(self):
         """Reuse initial discovery and select the reported local Mac.

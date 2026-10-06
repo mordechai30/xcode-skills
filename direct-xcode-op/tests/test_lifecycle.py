@@ -1,4 +1,4 @@
-"""Behavioral checks for Build history and breakpoint ownership."""
+"""Behavioral checks for breakpoint ownership."""
 import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,8 +9,7 @@ import sys
 
 location = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(location / 'scripts' if (location / 'scripts').exists() else location))
-from lifecycle.state import clean_required, new_log, previous_build
-from operations.build import prepare, invoked, finish
+from operations.build import finish
 from operations.continue_session import execute as resume
 from operations.debugger_command import execute as inspect
 
@@ -20,22 +19,14 @@ class FakeBackend:
     Calls expose order and breakpoint deletion to the tests.
     """
     def __init__(self):
-        """Create default successful Clean and paused debugger state.
+        """Create a paused debugger state.
         Each test changes only the result relevant to its case.
         """
         # Ordered operation calls used to check lifecycle effects.
         self.calls = []
-        # Configurable prerequisite Clean outcome.
-        self.clean_status = 'success'
         # Current debugger snapshot used for Continue preconditions.
         self.state = {'status': 'success', 'state': 'paused', 'stops': [{'breakpoints': [7]}]}
 
-    def clean(self, args, ctx):
-        """Record a Clean attempt and return its configured outcome.
-        No Build is implied by this method.
-        """
-        self.calls.append('clean')
-        return {'status': self.clean_status}
 
     def debug_status(self, ctx):
         """Return current debugger state.
@@ -55,7 +46,7 @@ class FakeBackend:
 
 class LifecycleTests(unittest.TestCase):
     """Test behavior independently of backend protocols.
-    Temporary logs and session records are removed after each case.
+    Temporary session records are removed after each case.
     """
     def setUp(self):
         """Create one isolated project context.
@@ -76,27 +67,7 @@ class LifecycleTests(unittest.TestCase):
         # User inputs for the current operation test.
         self.args = argparse.Namespace(configuration='Debug', keep_breakpoint=False, _context=self.ctx)
 
-    def test_failed_clean_does_not_advance_history(self):
-        """Check failed preparation and mandatory successful next Clean.
-        Preparation logs must not count as invoked Build attempts.
-        """
-        self.adapter.clean_status = 'failure'
-        self.assertEqual(prepare(self.args, self.ctx)['status'], 'needs_user_input')
-        self.assertIsNone(previous_build(self.folder, 'fixture', 'Debug'))
-        self.adapter.clean_status = 'success'
-        self.assertEqual(prepare(self.args, self.ctx)['status'], 'success')
-        invoked(self.ctx)
-        self.assertEqual(previous_build(self.folder, 'fixture', 'Debug'), self.ctx['log'])
-        self.assertEqual(self.adapter.calls, ['clean', 'clean'])
 
-    def test_one_hour_boundary(self):
-        """Check the strict age boundary using filename time.
-        File modification time is irrelevant to the rule.
-        """
-        now = datetime.now().astimezone().replace(microsecond=0)
-        name = 'log-fixture-Debug-' + (now - timedelta(hours=1)).strftime('%y-%m-%d-%H-%M-%S') + '.txt'
-        self.assertFalse(clean_required(self.folder / name, now))
-        self.assertTrue(clean_required(self.folder / name, now + timedelta(seconds=1)))
 
     def test_partial_inspection_queries_state_without_repeating(self):
         """Keep partial output and refresh the same debugger's state.
@@ -109,15 +80,15 @@ class LifecycleTests(unittest.TestCase):
             result = inspect(self.args, self.folder)
         action.assert_called_once_with(self.ctx, 'command', command='frame variable tick')
         self.assertEqual(state.call_count, 2)
-        self.assertEqual(result['response']['output'], 'tick = 4')
-        self.assertEqual(result['current']['state'], 'paused')
+        self.assertEqual(result['output'], 'tick = 4')
+        self.assertEqual(result['state'], 'paused')
 
     def test_continue_removes_responsible_only(self):
         """Resume an owned breakpoint stop.
         Unrelated breakpoints must survive.
         """
         result = resume(self.args, self.folder)
-        self.assertEqual(result['removed'], [7])
+        self.assertEqual(result['removed'], 7)
         self.assertEqual(self.ctx['session']['breakpoints'], [{'id': 9}])
         self.assertEqual(self.adapter.calls[0], ('delete_breakpoint', {'id': 7}))
 
@@ -126,7 +97,7 @@ class LifecycleTests(unittest.TestCase):
         The fake stop has no breakpoint cause.
         """
         self.adapter.state['stops'] = [{'breakpoints': []}]
-        self.assertEqual(resume(self.args, self.folder)['removed'], [])
+        self.assertEqual(resume(self.args, self.folder).get('removed'), None)
         self.assertEqual(self.adapter.calls, [('continue', {})])
 
     def test_retention_watches_without_deletion(self):
@@ -145,17 +116,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(resume(self.args, self.folder)['status'], 'needs_user_input')
         self.assertEqual(self.adapter.calls, [])
 
-    def test_failed_build_cleans_once_and_waits(self):
-        """Clean a failed invoked Build without another Build attempt.
-        The failed invocation still advances Build history.
-        """
-        prepare(self.args, self.ctx)
-        invoked(self.ctx)
-        self.adapter.calls.clear()
-        value = finish(self.args, self.ctx, {'status': 'failure', 'raw': 'compiler failed'})
-        self.assertEqual(value['status'], 'needs_user_input')
-        self.assertEqual(self.adapter.calls, ['clean'])
-        self.assertEqual(previous_build(self.folder, 'fixture', 'Debug'), self.ctx['log'])
 
     def test_ambiguous_breakpoint_does_not_delete(self):
         """Ask when several owned breakpoints caused a stop.
@@ -165,14 +125,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(resume(self.args, self.folder)['status'], 'needs_user_input')
         self.assertEqual(self.adapter.calls, [])
 
-    def test_project_history_is_separate(self):
-        """Keep two projects in one containing folder separate.
-        A sibling project's Build must not reset this project's timer.
-        """
-        self.ctx['selection']['owner_project'] = '/fixture/One.xcodeproj'
-        prepare(self.args, self.ctx)
-        invoked(self.ctx)
-        self.assertIsNone(previous_build(self.folder, 'fixture', 'Debug', {'owner_project': '/fixture/Two.xcodeproj'}))
 
 
 if __name__ == '__main__':

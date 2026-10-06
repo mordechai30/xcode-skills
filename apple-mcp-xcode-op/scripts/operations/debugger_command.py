@@ -1,24 +1,26 @@
 """Thin inspection gateway to the existing debugger connection."""
-from operations.common import ask, debug_context, observe
-from lifecycle.state import append_log
+from operations.common import ask, debug_context, observe, stop_fields
 import json
 
 
 def execute(args, root):
     """Forward the requested command and preserve its actual output.
-    Check paused state for common frame, value, and stack queries.
+    Refresh state after commands without parsing or restricting their text.
     """
     ctx, state = debug_context(args, root)
-    text = args.command.lstrip()
-    paused_query = text.startswith(('frame variable', 'frame info', 'thread backtrace', 'bt', 'register read'))
-    if paused_query and state.get('state') != 'paused':
-        return ask('This inspection requires a paused session. Use Pause first.') | {'current': state}
     value = ctx['backend'].debug_action(ctx, 'command', command=args.command)
-    if not value.get('response') and ctx.get('log'):
-        append_log(ctx['log'], 'Inspection ' + args.command, json.dumps(value))
     if value.get('response', {}).get('isWaitingForMore'):
+        value['message'] = 'Partial output received. State queried without repeating the command.'
+    if not value.get('current'):
         value['current'] = ctx['backend'].debug_status(ctx)
-        value['message'] = 'Partial inspection output retained. Current state queried without repeating the command.'
     if value.get('current'):
         observe(ctx, value['current'])
-    return value
+    response = value.get('response', {})
+    result = {'status':value.get('status','uncertain'), '_detail':getattr(args,'detail',False)}
+    for key in ('output','error','message'):
+        text = value.get(key) if value.get(key) is not None else response.get(key)
+        if text:
+            result[key] = text
+    if value.get('current'):
+        result.update(stop_fields(value['current']))
+    return result

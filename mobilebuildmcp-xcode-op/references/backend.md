@@ -1,31 +1,23 @@
-# Backend details
+# Limits and recovery
 
-## Backend route
+## Backend limits
 
-Discover supported inputs with installed help and live MCP schemas. Keep the owned Mobile MCP server and its Apple bridge during the session. Set supported in-memory defaults once; do not persist defaults into application files.
+Mobile SwiftPM Build uses its package tool. Debugger-free Run directly launches the selected executable after Build, because the background package tool lacks reliable executable/exit evidence.
 
-Use macOS Build/Clean/product/Launch/Stop, or SwiftPM package operations. Debug Run uses the Apple bridge; Release and debugger-disabled routes use the appropriate launch tool. Package Debug through Apple has no launch-argument input.
+MCP requests are limited to 60 seconds. Native Build retains its longer execution limit. Pause has a total 15-second limit from submission. Breakpoint watching continues until a stop, exit, interruption, or unavailable app control.
 
-Check actual domain errors, operation outcome fields, and returned artifacts. Bridge artifacts must match the requested remote tool and arguments. Do not hard-code reference schema versions. Independently verify returned PIDs against the selected executable: a name lookup can return another process. Never terminate by broad app-name matching.
+## Recovery
 
-## Logs and build history
+- Incomplete Build/Run: do not repeat it automatically. Use Status for an owned app, then Kill before another Run.
+- Pause expiry: use Status; the interrupt may already have affected the app. Do not resume automatically.
+- Pending breakpoint: it is installed, but resolution is not a hit. Use Status; inspect only at a verified paused frame.
+- Interrupted watch: execution is unchanged. Use Status to observe the app.
+- Incomplete inspection: narrow the request. A partial response never causes the command to run twice.
+- App control unavailable: use Kill. Do not attach or adopt another app or debugger.
+- Incomplete Kill: app/helper cleanup remains unverified. Do not start another Run until resolved. A warning can report an IDE breakpoint that could not be removed.
 
-For `/path/App.xcodeproj`, artifacts use `/path/mobilebuildmcp-xcode-op/`. A workspace uses the selected app target's owning project; a package uses `/path/Package/mobilebuildmcp-xcode-op/`.
+## Artifacts
 
-Top-level logs use `log-mobilebuildmcp-xcode-op-Debug-YY-MM-DD-HH-MM-SS.txt` or Release. Local timezone is recorded inside. Same-second collisions wait; no overwrite or suffix. Appending session output does not reset Build age. Only invoked Builds count; failed prerequisite Clean leaves history unchanged. Exactly one hour does not trigger age-based Clean.
+Required ownership and recovery state is private and automatic. Build products and dependencies remain available. Shared Xcode/backend storage and unrelated processes are preserved. Only verified request-owned response/build artifacts are removed after consumption.
 
-## Session recovery and termination
-
-Follow-up commands use the retained owned session. Verify current state and process identities. Lost channels must not create replacement debuggers or adopt external sessions. Offer verified Kill or wait.
-
-Kill removes recorded session breakpoints while the connection is usable. Process termination is app-first, followed by applicable dedicated debugger/helper and zombie-parent cleanup. Ask before terminating shared IDE/services or unrelated parents. Protect caller ancestors, system processes, and reused PIDs.
-
-After verified process cleanup, release the context even if a lost connection prevents breakpoint-removal verification; warn that an IDE breakpoint may remain. Unverified process cleanup keeps the context blocked.
-
-## Scheme selection
-
-Reuse suitable saved schemes. If configuration requires a copy, preserve the original and unrelated settings. Retain `source-mobilebuildmcp-xcode-op-configuration`, numbering unsuitable name collisions. Ask when suitable saved sources are absent or ambiguous.
-
-## Diagnostics
-
-Backend success requires operation and product/process evidence. Wrapper success or an empty error list alone is insufficient. After uncertain launch, inspect current state before another Run. Truncated public inspection includes an omission flag and log reference. Full diagnostic evidence is recorded once.
+Cleanup is explicit artifact removal. It does not terminate processes.

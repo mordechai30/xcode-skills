@@ -1,62 +1,17 @@
-"""Build preparation and failure rules for explicit and embedded builds."""
-import json
-from lifecycle.state import append_log, atomic_json, clean_required, new_log, previous_build, read_json
+"""Build selected products without automatic cleaning or stored history."""
+from lifecycle.diagnostics import diagnostics
 from operations.common import ask, context, current_session, resolve_selection
-from operations.clean import execute as clean
-
-
-def prepare(args, ctx):
-    """Create the attempt log and complete prerequisite Clean.
-    Failed preparation does not mark a Build as invoked.
-    """
-    previous = previous_build(ctx['data_dir'], ctx['skill'], args.configuration, ctx['selection'])
-    ctx['log'], now = new_log(ctx['data_dir'], ctx['skill'], args.configuration)
-    append_log(ctx['log'], 'Selection', json.dumps(ctx['selection']))
-    with ctx['log'].open('a') as stream:
-        stream.write('BUILD_CONTEXT=' + json.dumps(ctx['selection']) + '\n')
-    ctx['mark_build'] = lambda: invoked(ctx)
-    append_log(ctx['log'], 'Discovery', json.dumps(ctx['discovery']))
-    preflight = ctx['data_dir'] / 'preflight-output.txt'
-    if preflight.exists():
-        append_log(ctx['log'], 'Preflight evidence', preflight.read_text())
-        preflight.unlink()
-    for evidence in ctx.pop('evidence', []):
-        append_log(ctx['log'], 'Preflight evidence', evidence)
-    pending = ctx['data_dir'] / ('clean-required-' + args.configuration + '.json')
-    if clean_required(previous, now) or read_json(pending, False):
-        result = clean(args, ctx)
-        append_log(ctx['log'], 'Prerequisite Clean', result['status'])
-        if result['status'] != 'success':
-            atomic_json(pending, True)
-            return ask('Prerequisite Clean failed. Build was not invoked.') | {'clean': result, 'log': str(ctx['log'])}
-        pending.unlink(missing_ok=True)
-    return {'status': 'success'}
-
-
-def invoked(ctx):
-    """Mark actual backend invocation for Build-age accounting.
-    Preparation-only logs remain outside Build history.
-    """
-    with ctx['log'].open('a') as stream:
-        stream.write('BUILD_INVOKED\n')
 
 
 def finish(args, ctx, result):
-    """Record Build evidence and perform required failure Clean.
-    No retry is made after a failed or uncertain result.
+    """Report Build failure or uncertainty without another operation.
+    A failed Build never triggers Clean or an automatic retry.
     """
-    append_log(ctx['log'], 'Build result', result['status'])
     if result['status'] == 'failure':
-        cleaned = clean(args, ctx)
-        append_log(ctx['log'], 'Failed Build Clean', cleaned['status'])
-        pending = ctx['data_dir'] / ('clean-required-' + args.configuration + '.json')
-        if cleaned['status'] != 'success':
-            atomic_json(pending, True)
-        else:
-            pending.unlink(missing_ok=True)
-        return ask('Build failed. Clean was attempted. Wait for user instruction.') | {'build': result, 'clean': cleaned, 'log': str(ctx['log'])}
+        cause = result.get('message') or diagnostics(result.get('raw', result)) or 'Build failed.'
+        return {'status':'failure','stage':'build','message':cause}
     if result['status'] != 'success':
-        return ask('Build outcome is uncertain. Inspect evidence before another attempt.') | {'build': result, 'log': str(ctx['log'])}
+        return {'status':'uncertain','stage':'build','message':result.get('message') or 'Build outcome was not verified.','next':'Reconcile backend state before another Build or Run.'}
     return {'status': 'success'}
 
 
@@ -66,25 +21,20 @@ def execute(args, root):
     """
     ctx = context(args, root)
     if current_session(ctx):
-        return ask('An active context requires Kill and cleanup before Build.', ['kill', 'wait'])
+        return ask('Kill the active app before Build.', ['kill', 'wait'])
     selected = resolve_selection(ctx, args)
     if selected['status'] != 'success':
         return selected
-    prepared = prepare(args, ctx)
-    if prepared['status'] != 'success':
-        return prepared
-    result = perform(args, ctx)
-    completed = finish(args, ctx, result)
+    completed = finish(args, ctx, perform(args, ctx))
     if completed['status'] != 'success':
         return completed
     product = ctx['backend'].resolve_product(args, ctx)
-    append_log(ctx['log'], 'Product verification', json.dumps(product))
-    return {'status': product['status'], 'product': product, 'log': str(ctx['log'])}
+    return {'status':'success' if product['status'] == 'success' else 'uncertain', 'stage':'build' if product['status'] == 'success' else 'product', 'message':'Built; not launched.' if product['status'] == 'success' else 'Selected executable was not verified.'}
 
 
 def perform(args, ctx):
-    """Retain backend exceptions as uncertain Build evidence.
-    Verified backend failure results still pass through failure Clean.
+    """Invoke Build once and retain backend exceptions as uncertainty.
+    No additional Build or cleanup follows a failure.
     """
     try:
         return ctx['backend'].build(args, ctx)

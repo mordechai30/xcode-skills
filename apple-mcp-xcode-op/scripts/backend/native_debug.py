@@ -8,13 +8,18 @@ from lifecycle.channel import connect
 from lifecycle.process import capture_identity, verify_identity, traced
 from lifecycle.state import atomic_json
 from lifecycle.schemes import launch_arguments
+from lifecycle.output import capture_process
 
 
 def request(ctx, action, **values):
     """Address the existing controller only.
     A missing channel is reported without creating another debugger.
     """
-    return connect(ctx['data_dir'], 'd.sock', {'action': action, **values}, timeout=15)
+    deadline = ctx.get('request_deadline')
+    timeout = min(15, deadline - time.monotonic()) if deadline is not None else 15
+    if timeout <= 0:
+        raise TimeoutError('Pause expired. Use Status.')
+    return connect(ctx['data_dir'], 'd.sock', {'action': action, '_deadline':deadline, **values}, timeout=timeout)
 
 
 def launch(args, ctx, product):
@@ -25,13 +30,12 @@ def launch(args, ctx, product):
     folder = ctx['data_dir']
     arguments = launch_arguments(ctx['selection'])
     working = str(args.working_directory.resolve() if args.working_directory else Path(product['executable']).parent)
-    output = (folder / 'launcher-output.txt').open('a')
     if debug:
         script = Path(__file__).with_name('lldb_controller.py')
         process = subprocess.Popen(['xcrun', 'lldb', '--no-lldbinit', '-b', '-o',
                                     'command script import ' + shlex.quote(str(script)), '-o', 'skill_controller'],
-                                   cwd=folder, stdout=output, stderr=output)
-        output.close()
+                                   cwd=folder, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        capture_process(process, ctx, 'LLDB diagnostics')
         ctx['runtime']['controller'] = process
         if ctx.get('session'):
             ctx['session']['dedicated'] = [capture_identity(process.pid)]
@@ -40,20 +44,21 @@ def launch(args, ctx, product):
         while not (folder / 'd.sock').exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(.05)
         if not (folder / 'd.sock').exists():
-            raise RuntimeError('LLDB controller did not initialize; inspect launcher-output.txt.')
+            raise RuntimeError('LLDB controller did not initialize; use Status or Kill.')
         launched = request(ctx, 'launch', executable=product['executable'], working_directory=working, arguments=arguments)
         if launched['status'] != 'success':
             return launched
         pid = launched['pid']
         dedicated = [capture_identity(process.pid)]
     else:
-        process = subprocess.Popen([product['executable'], *arguments], cwd=working, stdout=output, stderr=output)
-        output.close()
+        process = subprocess.Popen([product['executable'], *arguments], cwd=working, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        capture_process(process, ctx, 'App diagnostics')
         ctx['runtime']['app_child'] = process
         pid = process.pid
         dedicated = []
         launched = {'status': 'success', 'state': 'running'}
-    output.close()
+    if not debug and process.poll() is not None:
+        return {'status':'success','state':'exited','debugger':False,'dedicated':[]}
     identity = capture_identity(pid)
     if debug and (not identity or identity.get('state') == 'Z'):
         fresh = request(ctx, 'status')
