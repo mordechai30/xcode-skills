@@ -1,40 +1,77 @@
-# Examples
+# Arguments and examples
 
-## Commands
+## Arguments
 
-Run from the skill root, outside sandbox restrictions:
+Run outside sandbox restrictions. `--configuration Debug|Release` and one container are required for Build/Run. All paths resolve from the caller's directory.
 
-```bash
-python3 scripts/manager.py build --project /path/App.xcodeproj --configuration Debug
-python3 scripts/manager.py run --workspace /path/App.xcworkspace --configuration Release
-python3 scripts/manager.py run --package /path/Package --configuration Debug --product App
-python3 scripts/manager.py run --project /path/App.xcodeproj --configuration Debug --no-debugger
-python3 scripts/manager.py set-breakpoint --file /path/main.cpp --line 20
-python3 scripts/manager.py debugger-command --command "frame variable tick"
-python3 scripts/manager.py debugger-command --command "thread backtrace"
-python3 scripts/manager.py pause
-python3 scripts/manager.py continue --keep-breakpoint
-python3 scripts/manager.py continue
-python3 scripts/manager.py kill
-```
+| Option | Use |
+|---|---|
+| `--project PATH.xcodeproj` | Xcode project |
+| `--workspace PATH.xcworkspace` | Xcode workspace |
+| `--package DIR` | Folder containing Package.swift |
+| `--scheme NAME`, `--target NAME` | Xcode selection; omit when unique |
+| `--product NAME` | Package executable; omit when unique |
+| `--destination VALUE` | Returned destination; My Mac for local Run |
+| `--arguments ARG…` | Supported Run routes; put last; explicit replacement |
+| `--working-directory DIR` | Supported native routes; default executable folder |
+| `--derived-data DIR` | Supported Xcode routes; default skill artifact folder/DerivedData |
+| `--architecture arm64\|x86_64` | Supported Xcode routes; default discovered destination |
+| `--no-debugger` | Debug Run without a debugger |
+| `--file PATH --line NUMBER` | Breakpoint; existing file and positive line |
+| `--keep-breakpoint` | Continue and watch the next hit |
+| `--command TEXT --detail` | Requested inspection with optional 500-byte limit |
 
-For supported direct launches, put `--arguments` last. Xcode native launches also preserve enabled saved-scheme arguments. Optional `--derived-data` and `--architecture` apply to Xcode routes, not SwiftPM host routes. Apple package Debug does not accept executable arguments.
+Native Run accepts `--arguments` and `--working-directory` (default: executable folder). Xcode also accepts `--derived-data` and `--architecture`.
+Do not use package `--scheme` or `--target`, or Xcode `--product`. Unsupported and irrelevant inputs fail before compilation.
 
-## Responses
-
-```json
-{"status":"success","message":"Built; not launched."}
-{"status":"success","message":"Launched.","state":"running","pid":1234,"debugger":true}
-{"status":"success","message":"Cleanup complete."}
-```
-
-A breakpoint watch waits silently and returns the verified stop. Read its location/thread and wait for user inspection, Continue, or Kill. Do not treat resolved locations as hits.
-
-## Artifact cleanup
+## Build and Run
 
 ```bash
-bash scripts/cleanup.sh /path/App.xcodeproj
-bash scripts/cleanup.sh /path/Package
+./scripts/manager.py build --project /path/App.xcodeproj --configuration Debug
+./scripts/manager.py run --project /path/App.xcodeproj --configuration Debug
+./scripts/manager.py status
+./scripts/manager.py kill
 ```
 
-Only run on explicit request. The script preserves top-level logs and does not check running sessions or remove saved schemes/build products outside the skill artifact folder.
+Examples: `Build succeeded.`; `Run succeeded.`; `Status: running.`; `Kill succeeded.` Warnings and errors follow the result. An ambiguous selection names the choices; supply the appropriate option.
+
+## Debug
+
+```bash
+./scripts/manager.py run --package /Users/motyzas/src/skill-test-projects/HelloSwiftPackage --configuration Debug --product HelloSwift
+./scripts/manager.py set-breakpoint --file /Users/motyzas/src/skill-test-projects/HelloSwiftPackage/Sources/HelloSwift/main.swift --line 9
+./scripts/manager.py debugger-command --command "frame variable tick"
+./scripts/manager.py continue
+./scripts/manager.py pause
+./scripts/manager.py continue
+./scripts/manager.py kill
+```
+
+Inspect only after a verified stop. The fixture updates tick on line 9. A pending breakpoint is installed but has not resolved; use Status and wait for a stop before inspection. A hit reports the short source location. Continue removes only the responsible owned breakpoint. Use `continue --keep-breakpoint` to stop there again.
+
+For a bounded stack:
+
+```bash
+./scripts/manager.py debugger-command --command "thread backtrace -c 3" --detail
+```
+
+Inspection reports the requested output and any command error. `…` marks omitted text; inspect fewer members or frames. Omitted data is not archived.
+
+## Release and arguments
+
+```bash
+./scripts/manager.py run --package /path/Package --configuration Release --product Product
+./scripts/manager.py status
+./scripts/manager.py kill
+```
+
+On supported routes, add `--arguments --mode test` to replace saved arguments. Bare trailing `--arguments` clears them. Quote values containing spaces. The supplied HelloSwiftPackage fixture accepts `--exit` for immediate exit. Run or subsequent Status reports the observed exit.
+
+## Cleanup
+
+```bash
+./scripts/cleanup.sh /path/App.xcodeproj
+./scripts/cleanup.sh /path/Package
+```
+
+Use Kill for app termination. Cleanup removes only non-log content in this skill's artifact folder. It never runs automatically and performs no session checks.

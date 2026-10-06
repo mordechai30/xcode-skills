@@ -35,23 +35,26 @@ class RevisionTests(unittest.TestCase):
             self.assertNotEqual(first, second)
             self.assertEqual(first.read_text(), 'preserved')
             self.assertEqual(second.name, 'log-fixture-Debug-' + (start + timedelta(seconds=1)).strftime('%y-%m-%d-%H-%M-%S') + '.txt')
-    def test_durable_output_appends_only_new_bytes(self):
-        """Retain app output after artifact removal.
+    def test_app_logs_only_new_diagnostics(self):
+        """Retain app diagnostics and exclude ordinary output.
         Repeated collection must not duplicate earlier output.
         """
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
-            output = folder / 'app-output.txt'
+            import os
+            from lifecycle.output import drain
             log = folder / 'log.txt'
             ctx = {'log': log, 'data_dir': folder, 'runtime': {}}
-            output.write_text('hello\n')
+            read, write = os.pipe()
+            os.write(write, b'hello\nwarning: first\nworld\nerror: second\n')
+            os.close(write)
+            drain(os.fdopen(read, 'rb'), ctx, 'App diagnostics')
             collect(ctx)
-            collect(ctx)
-            output.write_text('hello\nworld\n')
-            collect(ctx)
-            output.unlink()
-            self.assertEqual(log.read_text().count('hello'), 1)
-            self.assertEqual(log.read_text().count('world'), 1)
+            self.assertFalse((folder / 'app-output.txt').exists())
+            self.assertNotIn('hello', log.read_text())
+            self.assertNotIn('world', log.read_text())
+            self.assertEqual(log.read_text().count('warning: first'), 1)
+            self.assertEqual(log.read_text().count('error: second'), 1)
 
     def test_resolution_is_not_a_hit(self):
         """Record actual paused breakpoint causes only.

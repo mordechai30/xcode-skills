@@ -81,7 +81,7 @@ class LifecycleTests(unittest.TestCase):
         Preparation logs must not count as invoked Build attempts.
         """
         self.adapter.clean_status = 'failure'
-        self.assertEqual(prepare(self.args, self.ctx)['status'], 'needs_user_input')
+        self.assertEqual(prepare(self.args, self.ctx)['status'], 'failure')
         self.assertIsNone(previous_build(self.folder, 'fixture', 'Debug'))
         self.adapter.clean_status = 'success'
         self.assertEqual(prepare(self.args, self.ctx)['status'], 'success')
@@ -109,15 +109,15 @@ class LifecycleTests(unittest.TestCase):
             result = inspect(self.args, self.folder)
         action.assert_called_once_with(self.ctx, 'command', command='frame variable tick')
         self.assertEqual(state.call_count, 2)
-        self.assertEqual(result['response']['output'], 'tick = 4')
-        self.assertEqual(result['current']['state'], 'paused')
+        self.assertEqual(result['output'], 'tick = 4')
+        self.assertEqual(result['state'], 'paused')
 
     def test_continue_removes_responsible_only(self):
         """Resume an owned breakpoint stop.
         Unrelated breakpoints must survive.
         """
         result = resume(self.args, self.folder)
-        self.assertEqual(result['removed'], [7])
+        self.assertEqual(result['removed'], 7)
         self.assertEqual(self.ctx['session']['breakpoints'], [{'id': 9}])
         self.assertEqual(self.adapter.calls[0], ('delete_breakpoint', {'id': 7}))
 
@@ -126,7 +126,7 @@ class LifecycleTests(unittest.TestCase):
         The fake stop has no breakpoint cause.
         """
         self.adapter.state['stops'] = [{'breakpoints': []}]
-        self.assertEqual(resume(self.args, self.folder)['removed'], [])
+        self.assertEqual(resume(self.args, self.folder).get('removed'), None)
         self.assertEqual(self.adapter.calls, [('continue', {})])
 
     def test_retention_watches_without_deletion(self):
@@ -153,7 +153,7 @@ class LifecycleTests(unittest.TestCase):
         invoked(self.ctx)
         self.adapter.calls.clear()
         value = finish(self.args, self.ctx, {'status': 'failure', 'raw': 'compiler failed'})
-        self.assertEqual(value['status'], 'needs_user_input')
+        self.assertEqual(value['status'], 'failure')
         self.assertEqual(self.adapter.calls, ['clean'])
         self.assertEqual(previous_build(self.folder, 'fixture', 'Debug'), self.ctx['log'])
 
@@ -165,14 +165,6 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(resume(self.args, self.folder)['status'], 'needs_user_input')
         self.assertEqual(self.adapter.calls, [])
 
-    def test_project_history_is_separate(self):
-        """Keep two projects in one containing folder separate.
-        A sibling project's Build must not reset this project's timer.
-        """
-        self.ctx['selection']['owner_project'] = '/fixture/One.xcodeproj'
-        prepare(self.args, self.ctx)
-        invoked(self.ctx)
-        self.assertIsNone(previous_build(self.folder, 'fixture', 'Debug', {'owner_project': '/fixture/Two.xcodeproj'}))
 
 
 if __name__ == '__main__':

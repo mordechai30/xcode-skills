@@ -1,5 +1,5 @@
 """Resume a paused session and handle only its responsible breakpoint."""
-from operations.common import ask, debug_context, save_session, observe
+from operations.common import ask, debug_context, save_session, observe, stop_fields
 
 
 def execute(args, root):
@@ -28,5 +28,8 @@ def execute(args, root):
         return resumed
     current = ctx['backend'].debug_status(ctx)
     observe(ctx, current)
-    return {'status': current['status'], 'removed': removed, 'current': current,
+    facts = {'removed': removed[0]} if len(removed) == 1 else {}
+    if args.keep_breakpoint and responsible:
+        facts['kept'] = next(iter(responsible)) if len(responsible) == 1 else sorted(responsible)
+    return {'status': current['status'], **facts, **stop_fields(current),
             'watch': bool(args.keep_breakpoint and current.get('state') == 'running')}

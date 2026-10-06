@@ -47,14 +47,24 @@ def atomic_json(path: Path, value: Any) -> None:
 
 
 @contextmanager
-def operation_lock(root: Path) -> Iterator[None]:
+def operation_lock(root: Path, deadline=None) -> Iterator[None]:
     """Serialize state-changing operations for one installed skill.
 
     The kernel releases this advisory lock if the manager exits unexpectedly.
     """
     root.mkdir(parents=True, exist_ok=True)
     with (root / ".operation.lock").open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if deadline is None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        else:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('Pause expired while queued. Use Status.')
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(min(.05, max(0, deadline - time.monotonic())))
         yield
 
 
@@ -75,7 +85,7 @@ def new_log(project_data: Path, skill: str, configuration: str) -> tuple[Path, d
             time.sleep(0.05)
             now = datetime.now().astimezone()
             path = project_data / f"log-{skill}-{configuration}-{now.strftime('%y-%m-%d-%H-%M-%S')}.txt"
-    path.write_text(f"Started: {now.isoformat()}\nTimezone: {now.tzname()}\n", encoding="utf-8")
+
     return path, now
 
 
@@ -83,18 +93,11 @@ def previous_build(project_data: Path, skill: str, configuration: str, selection
     """Find the newest invoked Build for this project and configuration.
     Preparation-only logs and sibling projects do not advance history.
     """
-    prefix = f"log-{skill}-{configuration}-"
-    files = []
-    for path in project_data.glob(prefix + '*.txt'):
-        text = path.read_text(encoding='utf-8')
-        if 'BUILD_INVOKED\n' not in text:
-            continue
-        if selection:
-            contexts = [json.loads(line[len('BUILD_CONTEXT='):]) for line in text.splitlines() if line.startswith('BUILD_CONTEXT=')]
-            if not contexts or contexts[0].get('owner_project') != selection.get('owner_project'):
-                continue
-        files.append(path)
-    return max(files, key=lambda path: path.name, default=None)
+    for path in sorted(project_data.glob(f'log-{skill}-{configuration}-*.txt'), reverse=True):
+        with path.open(encoding='utf-8') as stream:
+            if any(line in ('Build invoked.\n','BUILD_INVOKED\n') for line in stream):
+                return path
+    return None
 
 
 def clean_required(previous: Path | None, now: datetime) -> bool:
@@ -117,8 +120,30 @@ def append_log(path: Path, title: str, content: str) -> None:
     """Append a timestamped operation result to its Build log.
     Preserve the original filename and all previous output.
     """
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(f"\n[{datetime.now().astimezone().isoformat()}] {title}\n")
-        stream.write(content)
-        if not content.endswith("\n"):
-            stream.write("\n")
+    if title == 'Public response':
+        text = content
+    elif title in ('Clean result','Prerequisite Clean','Failed Build Clean'):
+        text = 'Clean '+({'success':'succeeded','failure':'failed','uncertain':'incomplete'}.get(content,content))+'.\n'
+    else:
+        from lifecycle.diagnostics import diagnostics
+        text = diagnostics(content)
+        if not text:
+            return
+    with path.open('a',encoding='utf-8') as stream:
+        stream.write(text)
+        if not text.endswith('\n'):
+            stream.write('\n')
+
+
+def remove_closed_channels(folder):
+    """Remove known owned channels after verified helper termination.
+    Preserve regular files and symlinks that do not match their expected types.
+    """
+    import stat
+    for name, check in (('d.sock', stat.S_ISSOCK), ('app-output.pipe', stat.S_ISFIFO), ('app-error.pipe', stat.S_ISFIFO)):
+        path = Path(folder) / name
+        try:
+            if check(path.lstat().st_mode):
+                path.unlink()
+        except FileNotFoundError:
+            pass

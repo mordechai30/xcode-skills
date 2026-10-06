@@ -9,15 +9,17 @@ def launch_arguments(selection):
     """Read enabled arguments from the selected saved launch scheme.
     Saved schemes supply arguments; generated schemes use explicit arguments or none.
     """
+    if selection.get('arguments') is not None:
+        return selection['arguments']
     if selection.get('package'):
-        return selection.get('arguments', [])
+        return []
     containers = [Path(selection['owner_project'])]
     if selection.get('workspace'):
         containers.append(Path(selection['workspace']))
     sources = [file for container in containers for file in container.rglob('*.xcscheme')
                if file.stem == selection['scheme']]
     if not sources:
-        return selection.get('arguments', [])
+        return selection.get('arguments') or []
     if len(sources) != 1:
         raise ValueError('Several saved launch schemes match the selection.')
     launch = ET.parse(sources[0]).find('LaunchAction')

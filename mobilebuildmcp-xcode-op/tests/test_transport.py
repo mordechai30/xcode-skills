@@ -28,7 +28,7 @@ class TransportTests(unittest.TestCase):
         self.assertEqual([item['name'] for item in client.tools], ['Echo'])
         result = client.call('Echo', {'value': 'hello'})
         self.assertEqual(result['structured'], {'value': 'hello'})
-        self.assertEqual(client.messages[0]['method'], 'notifications/message')
+        self.assertFalse(hasattr(client, 'messages'))
 
     def test_unknown_and_missing_fields(self):
         """Reject unsupported arguments before a tool call.

@@ -1,31 +1,31 @@
-# Backend details
+# Limits and recovery
 
-## Backend route
+## Backend limits
 
-Use returned workspace identifiers and live tool schemas. Use the discovered scheme and verify its live configuration; select My Mac before Build/Run. `BuildProject` never launches; `RunProject` embeds Build and explicitly selects debugger attachment. Keep Build and launch outcomes separate.
+SwiftPM Release uses native SwiftPM.
 
-Use `InvokeDebuggerCommand` on the retained connection. Preserve partial output and query fresh state without blindly repeating a command. Native Clean must use Apple's actual build roots and selected configuration. An unavailable matching context blocks Clean.
+MCP requests are limited to 60 seconds. Native Build retains its longer execution limit. Pause has a total 15-second limit from submission. Breakpoint watching continues until a stop, exit, interruption, or unavailable app control.
 
-Package Debug opens the package directory and generated executable scheme. Package Release uses native SwiftPM because generated schemes lack supported configuration selection. Apple package Run has no launch-argument input; supplied arguments are rejected. Product paths come from actual linker evidence, not an assumed `.build/debug` directory.
+## Clean
 
-## Logs and build history
+Clean precedes the first invoked Build and a Build more than one hour after the previous invocation. Exactly one hour does not trigger age Clean. Failed prerequisite Clean blocks Build. An invoked failed Build advances history and performs Clean without retry. Incomplete Clean remains due on the next attempt. Build age uses the log filename, not later log changes.
 
-For `/path/App.xcodeproj`, artifacts use `/path/apple-mcp-xcode-op/`. A workspace uses the selected app target's owning project; a package uses `/path/Package/apple-mcp-xcode-op/`.
+## Recovery
 
-Top-level logs use `log-apple-mcp-xcode-op-Debug-YY-MM-DD-HH-MM-SS.txt` or Release. Local timezone is recorded inside. Same-second collisions wait; no overwrite or suffix. Appending session output does not reset Build age. Only invoked Builds count; failed prerequisite Clean leaves history unchanged. Exactly one hour does not trigger age-based Clean.
+- Incomplete Build/Run: do not repeat it automatically. Use Status for an owned app, then Kill before another Run.
+- Pause expiry: use Status; the interrupt may already have affected the app. Do not resume automatically.
+- Pending breakpoint: it is installed, but resolution is not a hit. Use Status; inspect only at a verified paused frame.
+- Interrupted watch: execution is unchanged. Use Status to observe the app.
+- Incomplete inspection: narrow the request. A partial response never causes the command to run twice.
+- App control unavailable: use Kill. Do not attach or adopt another app or debugger.
+- Incomplete Kill: app/helper cleanup remains unverified. Do not start another Run until resolved. A warning can report an IDE breakpoint that could not be removed.
 
-## Session recovery and termination
+## Logs and artifacts
 
-Follow-up commands use the retained owned session. Verify current state and process identities. Lost channels must not create replacement debuggers or adopt external sessions. Offer verified Kill or wait.
+Artifacts remain in `OWNER_PROJECT_FOLDER/apple-mcp-xcode-op`; packages use `PACKAGE_DIRECTORY/apple-mcp-xcode-op`. Operation logs are `log-apple-mcp-xcode-op-CONFIGURATION-TIMESTAMP.txt`.
 
-Kill removes recorded session breakpoints while the connection is usable. Process termination is app-first, followed by applicable dedicated debugger/helper and zombie-parent cleanup. Ask before terminating shared IDE/services or unrelated parents. Protect caller ancestors, system processes, and reused PIDs.
+Logs contain useful failures, warnings/errors with necessary source context, operation status, and exact public responses. They contain no selection dumps, backend setup stages, raw transcripts, or omitted inspection data. Ordinary app output is consumed and discarded.
 
-After verified process cleanup, release the context even if a lost connection prevents breakpoint-removal verification; warn that an IDE breakpoint may remain. Unverified process cleanup keeps the context blocked.
+Required ownership and recovery state is private and automatic. Build products and dependencies remain available. Shared Xcode/backend storage and unrelated processes are preserved. Only verified request-owned response/build artifacts are removed after consumption.
 
-## Scheme selection
-
-Reuse suitable saved schemes. If configuration requires a copy, preserve the original and unrelated settings. Retain `source-apple-mcp-xcode-op-configuration`, numbering unsuitable name collisions. Ask when suitable saved sources are absent or ambiguous.
-
-## Diagnostics
-
-Backend success requires operation and product/process evidence. Wrapper success or an empty error list alone is insufficient. After uncertain launch, inspect current state before another Run. Truncated public inspection includes an omission flag and log reference. Full diagnostic evidence is recorded once.
+Cleanup is explicit artifact removal. It preserves top-level operation logs and does not terminate processes.

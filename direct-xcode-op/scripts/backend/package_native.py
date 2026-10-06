@@ -19,12 +19,6 @@ class Adapter:
         # Backend module supplying its owned transport and debugger.
         self.base = base
 
-    def __getattr__(self, name):
-        """Expose unchanged backend operations to lifecycle modules.
-        Package-specific operations are defined directly on this adapter.
-        """
-        return getattr(self.base, name)
-
     def discover(self, args, ctx):
         """Read executable products from the actual package manifest.
         Libraries and test targets are not runnable selections.
@@ -99,3 +93,27 @@ class Adapter:
         """
         return native.launch(args, ctx, product)
 
+
+    def debug_status(self, ctx):
+        """Read state from this package's retained native debugger.
+        No connection is created by a follow-up request.
+        """
+        return native.debug_status(ctx)
+
+    def debug_action(self, ctx, action, **values):
+        """Send an action through the already-owned debugger.
+        Package launch and app ownership remain unchanged.
+        """
+        return native.debug_action(ctx, action, **values)
+
+    def stop(self, ctx):
+        """Stop the recorded native app through its owned route.
+        Kill verifies disappearance independently.
+        """
+        return native.stop(ctx)
+
+    def close(self, ctx):
+        """Close and reap native children after app cleanup.
+        Shared IDE services remain running.
+        """
+        return native.close(ctx)

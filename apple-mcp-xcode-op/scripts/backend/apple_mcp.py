@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import codecs
 import os
 import queue
 import subprocess
 import threading
 import time
+from lifecycle.diagnostics import StreamDiagnostics
 
 
 class MCPClient:
@@ -30,9 +32,12 @@ class MCPClient:
         # Complete stdout messages consumed by serialized requests.
         self.lines = queue.Queue()
         # Server diagnostics collected independently of JSON-RPC.
-        self.stderr_lines = []
-        # Received notifications and unrelated replies retained for diagnostics.
-        self.messages = []
+        self.stderr_lines = queue.Queue()
+        self.stderr_parser = StreamDiagnostics()
+        # Retained sessions deliver diagnostics directly to their operation log.
+        self.diagnostic_sink = None
+        # Tool-list changes invalidate the current schema cache.
+        self.tools_changed = False
         # Background reader that preserves complete protocol lines.
         self.reader = threading.Thread(target=self._read_stdout, daemon=True)
         self.reader.start()
@@ -65,15 +70,41 @@ class MCPClient:
         A sentinel reports EOF without silently reconnecting.
         """
         for line in self.process.stdout:
-            self.lines.put(line)
+            try:
+                message = json.loads(line) if isinstance(line, str) else line
+            except json.JSONDecodeError:
+                continue
+            if 'id' not in message:
+                if message.get('method') == 'notifications/tools/list_changed':
+                    self.tools_changed = True
+                continue
+            self.lines.put(message)
         self.lines.put(None)
 
     def _read_stderr(self):
         """Retain server diagnostics separately from JSON-RPC.
         Read incrementally so an active server does not delay output capture.
         """
-        for line in self.process.stderr:
-            self.stderr_lines.append(line)
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        while True:
+            chunk = os.read(self.process.stderr.fileno(), 4096)
+            detail = self.stderr_parser.feed(decoder.decode(chunk, final=not chunk), final=not chunk)
+            if detail:
+                if self.diagnostic_sink:
+                    self.diagnostic_sink(detail)
+                else:
+                    self.stderr_lines.put(detail)
+            if not chunk:
+                break
+
+    def set_diagnostic_sink(self, sink):
+        """Send retained-session stderr directly to its diagnostic log.
+        Flush startup diagnostics once before discarding queue storage.
+        """
+        self.diagnostic_sink = sink
+        pending = self.take_diagnostics()
+        if pending:
+            sink(pending)
 
     def _write(self, message):
         """Send one JSON-RPC message to the owned server.
@@ -92,7 +123,7 @@ class MCPClient:
 
     def request(self, method, params):
         """Send a request and wait for its matching ID or deadline.
-        Retain notifications and answer supported server requests.
+        Discard unrelated notifications and answer supported server requests.
         """
         request_id = self.next_id
         self.next_id += 1
@@ -106,11 +137,12 @@ class MCPClient:
             if line is None:
                 raise RuntimeError("Apple MCP bridge closed stdout before replying.")
             try:
-                message = json.loads(line)
+                message = json.loads(line) if isinstance(line, str) else line
             except json.JSONDecodeError:
                 continue
             if message.get("id") != request_id:
-                self.messages.append(message)
+                if message.get('method') == 'notifications/tools/list_changed':
+                    self.tools_changed = True
                 if message.get('method') and 'id' in message:
                     reply = {'jsonrpc': '2.0', 'id': message['id']}
                     if message['method'] == 'ping':
@@ -126,8 +158,23 @@ class MCPClient:
 
     def call(self, name, arguments, before_send=None, timeout=None):
         """Validate live supported and required fields before invoking a tool.
-        Return raw and structured evidence without discarding remote errors.
+        Return one useful result representation and preserve remote errors.
         """
+        if self.tools_changed:
+            refreshed = []
+            cursor = None
+            seen = set()
+            while True:
+                page = self.request('tools/list', {'cursor':cursor} if cursor else {})
+                refreshed.extend(page.get('tools', []))
+                cursor = page.get('nextCursor')
+                if not cursor:
+                    break
+                if cursor in seen:
+                    raise RuntimeError('MCP schema pagination repeated a cursor.')
+                seen.add(cursor)
+            self.tools = refreshed
+            self.tools_changed = False
         schema = next((item for item in self.tools if item.get("name") == name), None)
         if schema is None:
             raise RuntimeError(f"Apple MCP tool is not available: {name}")
@@ -155,7 +202,7 @@ class MCPClient:
         finally:
             self.timeout = previous_timeout
         return {"isError": value.get("isError", False), "structured": value.get("structuredContent"),
-                "content": value.get("content", []), "raw": json.dumps(value, ensure_ascii=False)}
+                "content": [] if value.get("structuredContent") is not None else value.get("content", [])}
 
     def close(self):
         """Close and reap only this owned stdio server process.
@@ -189,3 +236,14 @@ class MCPClient:
         Application lifecycle is handled by operation modules.
         """
         self.close()
+
+    def take_diagnostics(self):
+        """Remove consumed MCP stderr diagnostics from the owned queue.
+        Ordinary server output is discarded by the stderr reader.
+        """
+        lines = []
+        while True:
+            try:
+                lines.append(self.stderr_lines.get_nowait())
+            except queue.Empty:
+                return '\n'.join(lines)

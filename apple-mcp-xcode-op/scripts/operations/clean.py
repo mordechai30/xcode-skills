@@ -1,4 +1,4 @@
-"""Run a backend Clean and retain the complete result in the active Build log."""
+"""Run a backend Clean and retain its outcome in the active Build log."""
 from lifecycle.state import append_log
 
 
@@ -11,5 +11,5 @@ def execute(args, ctx):
         result = ctx['backend'].clean(args, ctx)
     except (RuntimeError, OSError, TimeoutError) as error:
         result = {'status': 'uncertain', 'message': str(error)}
-    append_log(ctx['log'], 'Clean result', str(result))
+    append_log(ctx['log'], 'Clean result', result['status'])
     return result

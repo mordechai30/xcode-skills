@@ -67,3 +67,10 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# macOS folder and system files
+.DS_Store
+.AppleDouble
+._*
+.Spotlight-V100
+.Trashes
