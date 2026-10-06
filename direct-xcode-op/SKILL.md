@@ -23,9 +23,9 @@ Use one skill at a time, on one project, with one configuration. Run from this s
 `CONTAINER` is exactly one of `--project PATH.xcodeproj`, `--workspace PATH.xcworkspace`, or `--package DIRECTORY` containing `Package.swift`. `CONFIG` is `Debug` or `Release`; it is required. Select Xcode with `--scheme NAME` and `--target NAME`; select a package with `--product NAME`. Unique choices are automatic. Follow-up commands need no selection inputs. Use `COMMAND --help` for its inputs.
 
 Native Run accepts `--arguments` and `--working-directory` (default: executable folder). Xcode also accepts `--derived-data` and `--architecture`.
-Put `--arguments` last. Omitted arguments use enabled saved Xcode arguments or none for a package. An explicit list replaces them; a bare flag clears them. Unsupported options fail before Clean or Build.
+Put `--arguments` last. Omitted arguments use enabled saved Xcode arguments or none for a package. An explicit list replaces them; a bare flag clears them. Unsupported options fail before Build.
 
-Run uses discovered **My Mac**. **Any Mac** and generic destinations are Build-only. Debug enables the debugger unless `--no-debugger` is supplied; Release does not. Build never launches. Every Run builds once. Kill before another Build or Run. Failed or uncertain requests do not retry automatically.
+Run uses discovered **My Mac**. **Any Mac** and generic destinations are Build-only. Debug enables the debugger unless `--no-debugger` is supplied; Release does not. Build never launches. Every Run builds once. Build and Run use incremental builds. Kill before another Build or Run. Failed or uncertain requests do not retry automatically.
 
 A pending breakpoint returns immediately. A resolved breakpoint on a running app watches for a hit, other stop, exit, or interruption. Interrupting the watch does not change execution. Inspection requires a suitable paused frame. Pause has a 15-second submission limit. Continue removes the responsible owned breakpoint; `--keep-breakpoint` retains it and watches again. Unexpected stops require user instruction.
 

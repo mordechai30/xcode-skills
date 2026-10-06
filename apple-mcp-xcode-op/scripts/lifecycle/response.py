@@ -40,7 +40,7 @@ def render(value, operation=''):
         head = label+' '+outcome+'.'
     if operation in ('set-breakpoint','continue') and value.get('watch') and state=='exited' and status=='success':
         head = label+' completed; app exited.'
-    if status=='failure' and value.get('stage') in ('build','clean','launch') and operation=='run':
+    if status=='failure' and value.get('stage') in ('build','launch') and operation=='run':
         head = 'Run failed during '+value['stage'].capitalize()+'.'
     # Routine bookkeeping is private. Only relevant diagnostics follow the result.
     details = []
@@ -71,7 +71,7 @@ def render(value, operation=''):
 
 def emit(value, operation=''):
     """Write a rendered response once without stderr chatter.
-    The manager appends these same bytes to the operation log.
+    No diagnostic archive is created.
     """
     sys.stdout.write(value if isinstance(value,str) else render(value,operation))
     sys.stdout.flush()

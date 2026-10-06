@@ -1,13 +1,11 @@
-"""Persist active-session ownership, operation locks, and append-only logs."""
+"""Persist active-session ownership and operation locks."""
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 import fcntl
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 import time
 from typing import Any, Iterator
@@ -68,71 +66,12 @@ def operation_lock(root: Path, deadline=None) -> Iterator[None]:
         yield
 
 
-def new_log(project_data: Path, skill: str, configuration: str) -> tuple[Path, datetime]:
-    """Create a unique local-time log for one Build attempt.
-
-    Build age is derived from this filename, never from later append activity.
-    """
-    now = datetime.now().astimezone()
-    stamp = now.strftime("%y-%m-%d-%H-%M-%S")
-    base = project_data / f"log-{skill}-{configuration}-{stamp}.txt"
-    path = base
-    while True:
-        try:
-            path.touch(mode=0o600, exist_ok=False)
-            break
-        except FileExistsError:
-            time.sleep(0.05)
-            now = datetime.now().astimezone()
-            path = project_data / f"log-{skill}-{configuration}-{now.strftime('%y-%m-%d-%H-%M-%S')}.txt"
-
-    return path, now
 
 
-def previous_build(project_data: Path, skill: str, configuration: str, selection=None) -> Path | None:
-    """Find the newest invoked Build for this project and configuration.
-    Preparation-only logs and sibling projects do not advance history.
-    """
-    for path in sorted(project_data.glob(f'log-{skill}-{configuration}-*.txt'), reverse=True):
-        with path.open(encoding='utf-8') as stream:
-            if any(line in ('Build invoked.\n','BUILD_INVOKED\n') for line in stream):
-                return path
-    return None
 
 
-def clean_required(previous: Path | None, now: datetime) -> bool:
-    """Apply the first-attempt and strictly-over-one-hour Clean rule.
-    Parse filename time so later session output does not reset age.
-    """
-    if previous is None:
-        return True
-    match = re.search(r"(\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})\.txt$", previous.name)
-    if not match:
-        raise RuntimeError(f"Build log timestamp is invalid: {previous.name}")
-    try:
-        attempted = datetime.strptime(match.group(1), "%y-%m-%d-%H-%M-%S").replace(tzinfo=now.tzinfo)
-    except ValueError as error:
-        raise RuntimeError(f"Build log timestamp is invalid: {previous.name}") from error
-    return now - attempted > timedelta(hours=1)
 
 
-def append_log(path: Path, title: str, content: str) -> None:
-    """Append a timestamped operation result to its Build log.
-    Preserve the original filename and all previous output.
-    """
-    if title == 'Public response':
-        text = content
-    elif title in ('Clean result','Prerequisite Clean','Failed Build Clean'):
-        text = 'Clean '+({'success':'succeeded','failure':'failed','uncertain':'incomplete'}.get(content,content))+'.\n'
-    else:
-        from lifecycle.diagnostics import diagnostics
-        text = diagnostics(content)
-        if not text:
-            return
-    with path.open('a',encoding='utf-8') as stream:
-        stream.write(text)
-        if not text.endswith('\n'):
-            stream.write('\n')
 
 
 def remove_closed_channels(folder):

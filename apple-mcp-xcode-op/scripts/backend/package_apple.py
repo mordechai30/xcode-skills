@@ -37,30 +37,22 @@ class Adapter:
                 'owners': {p: path for p in products}}
 
 
-    def command(self, ctx, action):
+    def command(self, ctx):
         """Create one SwiftPM command using the selected package context.
         Build uses the chosen executable product and configuration.
         """
         s = ctx['selection']
-        if action == 'clean':
-            return ['swift', 'package', '--package-path', s['package'], 'clean']
         return ['swift', 'build', '--package-path', s['package'], '--configuration', s['configuration'].lower(),
                 '--product', s['target']]
 
 
-    def native_clean(self, args, ctx):
-        """Clean this package without launching.
-        Preserve useful native diagnostics in the attempt log.
-        """
-        return native._call(self.command(ctx, 'clean'), timeout=60, ctx=ctx)
 
 
     def native_build(self, args, ctx):
         """Build the selected executable and configuration.
-        Mark history immediately before invoking SwiftPM.
+        Surface compiler diagnostics without retaining transcripts.
         """
-        ctx['mark_build']()
-        return native._call(self.command(ctx, 'build'), ctx=ctx)
+        return native._call(self.command(ctx), ctx=ctx)
 
 
     def native_resolve_product(self, args, ctx):
@@ -123,7 +115,7 @@ class Adapter:
 
     def setup(self, ctx):
         """Select the destination that discovery and the user resolved.
-        Verify the actual Apple selection before Clean, Build, or Run.
+        Verify the actual Apple selection before Build or Run.
         """
         if ctx.setdefault('runtime', {}).get('package_destination'):
             return
@@ -151,16 +143,6 @@ class Adapter:
                         atomic_json(ctx['data_dir'] / ('package-path-' + s['configuration'] + '.json'), {'executable': str(path)})
 
 
-    def clean(self, args, ctx):
-        """Clean the selected Apple package scheme or native Release package.
-        Match the route that will perform Build.
-        """
-        if not self.apple_route(args):
-            return self.native_clean(args, ctx)
-        self.setup(ctx)
-        workspace = str(Path(ctx['selection']['package']) / '.swiftpm/xcode/package.xcworkspace')
-        return native._call(['xcrun', 'xcodebuild', '-workspace', workspace, '-scheme', ctx['selection']['scheme'],
-                            '-configuration', args.configuration, '-destination', 'platform=macOS', 'clean'], timeout=60, ctx=ctx)
 
 
     def build(self, args, ctx):

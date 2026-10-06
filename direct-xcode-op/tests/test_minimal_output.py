@@ -11,34 +11,10 @@ sys.path.insert(0,str(ROOT/'scripts'))
 import manager
 from lifecycle.output import record_detail
 from lifecycle.diagnostics import diagnostics
-from lifecycle.state import append_log
 from lifecycle.response import render
 
 
 class MinimalOutputTests(unittest.TestCase):
-    def test_public_build_surfaces_warning_and_logs_exact_response(self):
-        """Exercise manager parsing, dispatch, rendering, and log emission.
-        Backend diagnostics must appear publicly without setup or metadata.
-        """
-        with tempfile.TemporaryDirectory() as folder:
-            project=Path(folder)/'App.xcodeproj';project.mkdir()
-            log=Path(folder)/'log.txt'
-            ctx={'runtime':{},'backend':Mock(),'log':log,'data_dir':Path(folder)}
-            def build(args,root):
-                record_detail(ctx,'Diagnostics','main.swift:12: warning: unused value')
-                append_log(log,'Stage','GetTargetBuildSettings INTERNAL_MARKER')
-                return {'status':'success','pid':999,'debugger':False,'log':str(log)}
-            output=io.StringIO()
-            with patch.object(manager,'ROOT',Path(folder)),patch.object(manager,'context',return_value=ctx),patch.object(manager.OPERATIONS['build'],'execute',side_effect=build),patch.object(sys,'argv',['manager','build','--project',str(project),'--configuration','Debug']),contextlib.redirect_stdout(output):
-                self.assertEqual(manager.main(),0)
-            public=output.getvalue();stored=log.read_text()
-            self.assertIn('Build succeeded.',public)
-            self.assertIn('warning: unused value',public)
-            self.assertLessEqual(len(public.encode()),200)
-            self.assertTrue(stored.endswith(public))
-            self.assertNotIn('INTERNAL_MARKER',stored)
-            self.assertNotIn('999',public)
-            self.assertNotIn('debugger',public)
 
     def test_diagnostic_fields_ignore_unrelated_json_strings(self):
         """Read explicit domain diagnostic fields only.
@@ -90,18 +66,6 @@ class MinimalOutputTests(unittest.TestCase):
         value.update(watch=True,_hit=True)
         self.assertIn('hit: main.swift:9',render(value,'set-breakpoint'))
 
-    def test_debug_app_diagnostics_forward_without_an_extra_archive(self):
-        """Forward filtered child diagnostics to the existing parent reader.
-        The parent performs the sole log write and public warning collection.
-        """
-        output=io.StringIO()
-        with contextlib.redirect_stdout(output):
-            record_detail({'forward':True},'App diagnostics','main.swift:9: warning: runtime warning')
-        with tempfile.TemporaryDirectory() as folder:
-            log=Path(folder)/'log.txt';ctx={'log':log}
-            record_detail(ctx,'Diagnostics',output.getvalue().strip())
-            self.assertEqual(log.read_text().count('runtime warning'),1)
-            self.assertIn('runtime warning',ctx['public_warning'])
 
     def test_partial_startup_requeries_only_state(self):
         """Reconcile a late startup reply with one read-only state request.
@@ -118,16 +82,6 @@ class MinimalOutputTests(unittest.TestCase):
         self.assertIn('spec_from_file_location',call.call_args_list[0].args[2]['command'])
         self.assertNotIn('spec_from_file_location',call.call_args_list[1].args[2]['command'])
 
-    def test_interrupted_request_logs_the_exact_public_bytes(self):
-        """Retain interrupted request output without querying the backend again.
-        The same bounded text is emitted and appended to the owned log.
-        """
-        with tempfile.TemporaryDirectory() as folder:
-            log=Path(folder)/'log.txt';output=io.StringIO()
-            with patch.object(manager,'read_json',side_effect=[{'data_dir':folder},{'log':str(log)}]),patch.object(sys,'argv',['manager','set-breakpoint']),contextlib.redirect_stdout(output):
-                manager.emit_exception({'status':'uncertain','message':'Request interrupted. Use Status.'})
-            self.assertEqual(output.getvalue(),log.read_text())
-            self.assertLessEqual(len(output.getvalue().encode()),500)
 
     def test_build_command_summary_is_not_diagnostic_context(self):
         """Drop repeated compiler invocation summaries after Build failure.
@@ -139,3 +93,44 @@ class MinimalOutputTests(unittest.TestCase):
         self.assertNotIn('CompileC',result)
         self.assertNotIn('Building project',result)
         self.assertNotIn('commands failed',result)
+
+    def test_public_warning_without_any_log(self):
+        """Exercise public Build rendering without diagnostic files.
+        Warnings must still surface after the storage path is removed.
+        """
+        with tempfile.TemporaryDirectory() as folder:
+            project=Path(folder)/'App.xcodeproj';project.mkdir()
+            ctx={'runtime':{},'backend':Mock(),'data_dir':Path(folder)}
+            def build(args,root):
+                record_detail(ctx,'Diagnostics','main.swift:12: warning: unused value')
+                return {'status':'success'}
+            output=io.StringIO()
+            with patch.object(manager,'ROOT',Path(folder)),patch.object(manager,'context',return_value=ctx),patch.object(manager.OPERATIONS['build'],'execute',side_effect=build),patch.object(sys,'argv',['manager','build','--project',str(project),'--configuration','Debug']),contextlib.redirect_stdout(output):
+                self.assertEqual(manager.main(),0)
+            self.assertIn('warning: unused value',output.getvalue())
+            self.assertFalse(list(Path(folder).glob('log*.txt')))
+            self.assertNotIn('evidence',ctx)
+
+    def test_failed_build_does_not_clean_or_store_history(self):
+        """A failed Build returns its cause without another backend action.
+        Failure handling creates no artifacts or history.
+        """
+        from operations.build import perform,finish
+        with tempfile.TemporaryDirectory() as folder:
+            backend=Mock();ctx={'data_dir':Path(folder),'backend':backend}
+            backend.build.return_value={'status':'failure','message':'compiler failure'}
+            result=finish(None,ctx,perform(None,ctx))
+            self.assertEqual(result['message'],'compiler failure')
+            backend.build.assert_called_once_with(None,ctx)
+            self.assertEqual(len(backend.mock_calls),1)
+            self.assertEqual(list(Path(folder).iterdir()),[])
+
+    def test_forwarded_app_warning_without_archive(self):
+        """Surface native debugger app warnings through the parent reader.
+        No app-output or diagnostic archive is created.
+        """
+        output=io.StringIO()
+        with contextlib.redirect_stdout(output):record_detail({'forward':True},'Diagnostics','warning: runtime warning')
+        ctx={};record_detail(ctx,'Diagnostics',output.getvalue())
+        self.assertIn('runtime warning',ctx['public_warning'])
+        self.assertNotIn('evidence',ctx)

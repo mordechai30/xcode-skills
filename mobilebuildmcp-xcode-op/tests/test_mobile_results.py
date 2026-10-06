@@ -20,12 +20,10 @@ class Server:
         # Complete MCP tool response for the current case.
         self.response = response
 
-    def call(self, name, values, before_send=None, timeout=None):
+    def call(self, name, values, timeout=None):
         """Return the configured response to a requested tool.
         This fixture creates no application or backend process.
         """
-        if before_send:
-            before_send()
         return self.response
 
 
@@ -67,15 +65,12 @@ class MobileResultTests(unittest.TestCase):
                     'error': 'compiler failed' if error else None,
                     'data': {'summary': {'status': status}}}
         response = {'structured': envelope, 'isError': error, 'raw': 'fixture'}
-        invoked = Mock()
-        ctx = {'runtime': {'mobile_server': Server(response)}, 'selection': {'scheme': 'App', 'configuration': 'Debug'},
-               'mark_build': invoked}
+        ctx = {'runtime': {'mobile_server': Server(response)}, 'selection': {'scheme': 'App', 'configuration': 'Debug'}}
         result = tool(ctx, 'build_macos', {})
-        invoked.assert_called_once_with()
         return result
 
     def test_domain_failure_survives_wrapper(self):
-        """Return actual Build failure to the Clean procedure.
+        """Return actual Build failure to the public operation.
         An MCP isError response must not bypass failed-Build handling.
         """
         self.assertEqual(self.result(status='FAILED', error=True)['status'], 'failure')

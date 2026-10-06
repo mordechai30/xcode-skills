@@ -1,7 +1,7 @@
 """Terminate app first, then verified dedicated debugger processes."""
 from pathlib import Path
 from lifecycle.process import capture_identity, terminate_identity, verify_identity, matching_processes
-from lifecycle.state import append_log, read_json, atomic_json, remove_closed_channels
+from lifecycle.state import read_json, atomic_json, remove_closed_channels
 from operations.common import ask, context, save_session
 from lifecycle.output import collect
 
@@ -48,8 +48,8 @@ def execute(args, root):
     try:
         ctx['backend'].close(ctx)
     except (RuntimeError, OSError, TimeoutError) as error:
-        if ctx.get('log'):
-            append_log(ctx['log'], 'Helper close failed', str(error))
+        from lifecycle.output import record_detail
+        record_detail(ctx, 'Diagnostics', 'error: '+str(error))
     collect(ctx)
     helpers = [terminate_identity(record) for record in dedicated]
     if app and capture_identity(app['pid']) is not None and app_result.get('reason') != 'terminated; defunct entry awaits system reaping':
@@ -109,9 +109,6 @@ def recover(root, locator):
               'app':'terminated' if complete else 'unverified', 'helpers':'terminated' if all(entry['status'] == 'success' for entry in helpers) else 'unverified',
               'warning': 'IDE breakpoint may remain.' if session.get('breakpoints') else None,
               'message': 'Recovered cleanup complete.' if complete else 'Recovered cleanup remains incomplete.'}
-    if session.get('log'):
-        collect({'log': Path(session['log']), 'data_dir': folder, 'runtime': {}})
-        append_log(Path(session['log']), 'Kill recovery', result['message'])
     if complete:
         remove_closed_channels(folder)
         atomic_json(folder / 'session.json', {'state':'closed','configuration':session.get('selection',{}).get('configuration'),'app':'terminated','helpers':'terminated'})

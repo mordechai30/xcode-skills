@@ -10,7 +10,7 @@ import subprocess
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
-HEADER='# Per-task response and log sizes\n\nSizes are UTF-8 bytes. Response includes stdout, stderr, and newline. Log growth includes diagnostics, operation status, and the public response. Log size is measured after the task; — means no log changed.\n\n| Skill | Project | Config | Test | Operation | Result | Response bytes | Added log bytes | Log bytes |\n|---|---|---|---|---|---|---:|---:|---:|\n'
+HEADER='# Per-task response and log sizes\n\nSizes are UTF-8 bytes. Response includes stdout, stderr, and newline. Current operations must create or update no logs. Log size is measured after the task; — means no log changed.\n\n| Skill | Project | Config | Test | Operation | Result | Response bytes | Added log bytes | Log bytes |\n|---|---|---|---|---|---|---:|---:|---:|\n'
 
 
 def main():
@@ -23,8 +23,7 @@ def main():
     fixture='HelloCpp';config='Debug';folder=args.fixtures/fixture
     def call(operation,*inputs,interrupt=False):
         logs=folder/ROOT.name
-        before={p:p.stat().st_size for p in logs.glob('log-*.txt')}
-        submitted=datetime.now(timezone.utc).isoformat()
+        before={p:(p.stat().st_size,p.stat().st_mtime_ns) for p in logs.glob('log-*.txt')}
         command=[str(ROOT/'scripts/manager.py'),operation,*map(str,inputs)]
         if interrupt:
             process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -37,14 +36,10 @@ def main():
         text=stdout.decode()
         limit=500 if code or '--detail' in inputs else 200
         assert not stderr and len(stdout)<=limit,(operation,text,stderr)
-        after={p:p.stat().st_size for p in logs.glob('log-*.txt')}
-        changed=[p for p in after if after[p]!=before.get(p,0)]
-        for p in changed:
-            if operation not in ('run','build') or code==0:
-                assert stdout in p.read_bytes(),(operation,p,text)
-            content=p.read_text()
-            assert 'BUILD_CONTEXT=' not in content and '] Stage' not in content,(operation,p)
-        cells=(ROOT.name,fixture,config,args.scenario,operation,'succeeded' if code==0 else 'incomplete' if 'incomplete' in text else 'rejected',len(stdout)+len(stderr),sum(after[p]-before.get(p,0) for p in changed),after[changed[-1]] if changed else '—')
+        after={p:(p.stat().st_size,p.stat().st_mtime_ns) for p in logs.glob('log-*.txt')}
+        assert after==before, 'An operation created or updated a log'
+        changed=[]
+        cells=(ROOT.name,fixture,config,args.scenario,operation,'succeeded' if code==0 else 'incomplete' if 'incomplete' in text else 'rejected',len(stdout)+len(stderr),0,'—')
         line='| '+' | '.join(map(str,cells))+' |\n'
         marker='\n## Earlier interface measurements\n'
         if args.report.exists() and marker in args.report.read_text():
@@ -136,10 +131,6 @@ def main():
             folder=copy
             text,code=call('build',*select(),'--configuration','Debug')
             assert code and 'SKILL_FAILURE_MARKER' in text,text
-            latest=max((folder/ROOT.name).glob('log-*.txt'),key=lambda p:p.stat().st_mtime_ns)
-            stored=latest.read_text()
-            assert stored.count('Build invoked.')==1,stored
-            assert 'Clean succeeded.' in stored,stored
             assert ok('status')=='Status: no app.\n'
     finally:
         text,code=call('status')

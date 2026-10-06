@@ -1,7 +1,6 @@
-"""Launch the selected product after required Build preparation."""
+"""Build once and launch the selected product."""
 import json
-from lifecycle.state import append_log
-from operations.build import prepare, perform, finish
+from operations.build import perform, finish
 from operations.common import ask, context, resolve_selection, save_session
 from lifecycle.process import capture_identity
 
@@ -21,7 +20,7 @@ def pending(ctx, args, product):
     save_session(ctx, {'status': 'uncertain', 'state': 'launch_pending', 'app': None,
                       'debugger': args.configuration == 'Debug' and not args.no_debugger,
                       'dedicated': dedicated, 'selection': ctx['selection'], 'product': product,
-                      'log': str(ctx['log']), 'breakpoints': []})
+                      'breakpoints': []})
 
 
 def execute(args, root):
@@ -43,9 +42,6 @@ def execute(args, root):
     product = ctx['backend'].resolve_product(args, ctx) if embedded else {}
     if embedded and product['status'] not in ('success', 'missing'):
         return ask('Selected product evidence is unavailable or uncertain.') | {'product': product}
-    prepared = prepare(args, ctx)
-    if prepared['status'] != 'success':
-        return prepared
     if embedded:
         pending(ctx, args, product)
         outcome = ctx['backend'].launch(args, ctx, product)
@@ -55,7 +51,7 @@ def execute(args, root):
     completed = finish(args, ctx, build_result)
     if completed['status'] != 'success':
         if embedded and outcome.get('app'):
-            session = outcome | {'selection': ctx['selection'], 'log': str(ctx['log']), 'breakpoints': []}
+            session = outcome | {'selection': ctx['selection'], 'breakpoints': []}
             save_session(ctx, session)
         elif embedded and build_result['status'] == 'failure':
             save_session(ctx, None)
@@ -79,7 +75,7 @@ def execute(args, root):
         recorded = ctx['session']['dedicated']
         outcome['dedicated'] = list({entry['pid']: entry for entry in recorded + outcome.get('dedicated', []) if entry}.values())
     session = outcome | {'selection': ctx['selection'], 'product': product,
-                         'log': str(ctx['log']), 'breakpoints': []}
+                         'breakpoints': []}
     if outcome.get('app') or outcome.get('dedicated') or outcome['status'] == 'uncertain' or outcome['state'] == 'exited':
         save_session(ctx, session)
     else:
@@ -87,4 +83,4 @@ def execute(args, root):
         ctx['backend'].close(ctx)
     if (outcome.get('app') or {}).get('pid'):
         outcome['pid'] = outcome['app']['pid']
-    return {key: outcome[key] for key in ('status', 'state', 'pid', 'debugger', 'message') if key in outcome} | {'log': str(ctx['log'])}
+    return {key: outcome[key] for key in ('status', 'state', 'pid', 'debugger', 'message') if key in outcome}

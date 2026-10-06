@@ -11,7 +11,6 @@ from backend import apple, native
 from backend.apple_mcp import MCPClient
 from lifecycle.process import capture_identity, verify_identity, traced, matching_processes
 from lifecycle.diagnostics import record
-from lifecycle.state import append_log
 from lifecycle.schemes import launch_arguments
 from lifecycle.output import record_detail
 
@@ -29,15 +28,14 @@ def server(ctx):
     return ctx['runtime']['mobile_server']
 
 
-def tool(ctx, name, values, before_send=None):
+def tool(ctx, name, values):
     """Invoke a current tool and validate its structured result envelope.
     Preserve schema identity, version, and useful domain errors.
     """
     connection = server(ctx)
-    marker = before_send or (ctx.get('mark_build') if name in ('build_macos', 'build_run_macos', 'swift_package_build', 'swift_package_run') else None)
     started = time.time()
-    response = connection.call(name, values, before_send=marker,
-                               timeout=apple.request_timeout(ctx, 60 if name in ('build_macos', 'build_run_macos', 'clean', 'xcode_ide_call_tool', 'swift_package_build', 'swift_package_run', 'swift_package_clean') else 15))
+    response = connection.call(name, values, 
+                               timeout=apple.request_timeout(ctx, 60 if name in ('build_macos', 'build_run_macos', 'xcode_ide_call_tool', 'swift_package_build', 'swift_package_run') else 15))
     # The bridge may include inspection text; do not archive that envelope.
     inspection = name == 'xcode_ide_call_tool' and values.get('remoteTool') == 'InvokeDebuggerCommand'
     record(ctx, name, {} if inspection else response)
@@ -50,7 +48,7 @@ def tool(ctx, name, values, before_send=None):
     if response.get('isError') or data.get('didError') or data.get('error'):
         return {'status': 'failure', 'envelope': data, 'build_status':build_status, 'message':diagnostics(data) or 'Backend operation failed.'}
     payload = data.get('data', {})
-    if name in ('build_macos', 'build_run_macos', 'clean', 'get_mac_app_path', 'launch_mac_app', 'stop_mac_app', 'swift_package_build', 'swift_package_clean', 'swift_package_run', 'swift_package_stop') and payload.get('summary', {}).get('status') != 'SUCCEEDED':
+    if name in ('build_macos', 'build_run_macos', 'get_mac_app_path', 'launch_mac_app', 'stop_mac_app', 'swift_package_build', 'swift_package_run', 'swift_package_stop') and payload.get('summary', {}).get('status') != 'SUCCEEDED':
         return {'status': 'failure' if payload.get('summary', {}).get('status') == 'FAILED' else 'uncertain',
                 'envelope': data, 'build_status':build_status, 'message':diagnostics(data) or 'Backend operation failed.'}
     artifacts = payload.get('artifacts', {})
@@ -94,7 +92,7 @@ class AppleBridge:
             raise RuntimeError('MobileBuildMCP omitted the raw bridge artifact.')
         return json.loads(Path(path).expanduser().read_text())
 
-    def call(self, name, arguments, before_send=None, timeout=None):
+    def call(self, name, arguments, timeout=None):
         """Validate and forward one remote Apple request.
         Verify artifact tool and arguments against the request.
         """
@@ -110,7 +108,7 @@ class AppleBridge:
         if isinstance(limit, (int, float)):
             deadline = min(deadline, int(limit))
         self.started = time.time()
-        result = tool(self.ctx, 'xcode_ide_call_tool', {'remoteTool': name, 'arguments': json.dumps(arguments), 'timeoutMs': deadline}, before_send=before_send)
+        result = tool(self.ctx, 'xcode_ide_call_tool', {'remoteTool': name, 'arguments': json.dumps(arguments), 'timeoutMs': deadline})
         envelope = result.get('envelope', {})
         if not envelope.get('data', {}).get('artifacts', {}).get('rawResponseJsonPath'):
             raise RuntimeError(result.get('message') or 'Bridge returned no completed request artifact.')
@@ -197,19 +195,10 @@ def macos_context(args, ctx):
     result = apple.decode(response)
     if result.get('didError') or result.get('error'):
         raise RuntimeError('MobileBuildMCP rejected selected defaults: ' + apple.diagnostic_message(response))
-    if ctx.get('log'):
-        record(ctx, 'Mobile macOS defaults', response)
+    record(ctx, 'Mobile macOS defaults', response)
     ctx['runtime']['macos_defaults'] = value
 
 
-def clean(args, ctx):
-    """Clean through the macOS backend with matching Build context.
-    Debug embedded builds use the matching Apple context fallback.
-    """
-    if ctx['runtime'].get('workspace'):
-        return apple.clean(args, ctx)
-    macos_context(args, ctx)
-    return tool(ctx, 'clean', {'platform': 'macOS'})
 
 
 def build(args, ctx):

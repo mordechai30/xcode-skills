@@ -1,5 +1,4 @@
-"""Copy available session diagnostics into the retained top-level log."""
-from lifecycle.state import append_log
+"""Consume session diagnostics for bounded public responses."""
 from lifecycle.diagnostics import diagnostics, StreamDiagnostics
 import codecs
 import sys
@@ -13,19 +12,17 @@ def collect(ctx):
     """Consume pending server diagnostics without retaining transcripts.
     App and native command streams are drained when they are received.
     """
-    if not ctx.get('log') or not ctx.get('data_dir'):
-        return
     for name in ('bridge', 'mobile_server'):
         connection = ctx['runtime'].get(name)
         take = getattr(connection, 'take_diagnostics', None)
         content = take() if take else ''
         detail = diagnostics(content)
         if detail:
-            append_log(ctx['log'], name + ' diagnostics', detail)
+            record_detail(ctx, name + ' diagnostics', detail)
 
 
 def drain(stream, ctx, title):
-    """Consume a pipe promptly and append only diagnostic blocks.
+    """Consume a pipe promptly and surface only diagnostic blocks.
     A background reader never retains ordinary app or launcher output.
     """
     parser = StreamDiagnostics()
@@ -51,7 +48,7 @@ def capture_process(process, ctx, title):
         ctx.setdefault('runtime', {}).setdefault('stream_readers', []).append(thread)
 
 
-def capture_fifo(path, log):
+def capture_fifo(path):
     """Provide LLDB with a pipe destination instead of a raw app archive.
     The reader removes the request-owned FIFO after the writer closes.
     """
@@ -67,8 +64,8 @@ def capture_fifo(path, log):
 
 
 def record_detail(ctx, title, detail):
-    """Keep a useful failure cause and record one diagnostic block.
-    Startup evidence is held only until the operation log is available.
+    """Keep useful failure causes and bounded public diagnostics.
+    Ordinary output and diagnostic archives are discarded.
     """
     if not detail:
         return
@@ -87,7 +84,3 @@ def record_detail(ctx, title, detail):
             old = ctx.get('public_'+kind)
             if not old or old.startswith('--- xcodebuild:') and not line.startswith('--- xcodebuild:'):
                 ctx['public_'+kind] = line[:500]
-    if ctx.get('log'):
-        append_log(ctx['log'], title, detail)
-    else:
-        ctx.setdefault('evidence', []).append(title + '\n' + detail)

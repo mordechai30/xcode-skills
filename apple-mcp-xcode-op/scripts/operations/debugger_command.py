@@ -1,6 +1,5 @@
 """Thin inspection gateway to the existing debugger connection."""
 from operations.common import ask, debug_context, observe, stop_fields
-from lifecycle.state import append_log
 import json
 
 

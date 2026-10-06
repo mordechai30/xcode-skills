@@ -66,22 +66,6 @@ class CompactTests(unittest.TestCase):
             self.assertFalse(process.stderr)
             self.assertTrue(process.stdout.decode().strip())
 
-    def test_native_logs_only_diagnostics_without_stages(self):
-        """Keep diagnostic lines once and discard successful backend payloads.
-        Backend stages are discarded; warnings remain available.
-        """
-        from backend.native import _call
-        from unittest.mock import patch
-        with tempfile.TemporaryDirectory() as folder:
-            log = Path(folder) / 'log.txt'
-            ctx = {'log': log}
-            result = Namespace(returncode=0, stdout='unique-native-evidence\n{ platform:iOS, error: incompatible destination }\nfile.cpp:4: warning: unique-warning', stderr='')
-            with patch('backend.native.subprocess.run', return_value=result):
-                _call(['fixture'], ctx=ctx)
-            self.assertNotIn('unique-native-evidence', log.read_text())
-            self.assertNotIn('incompatible destination', log.read_text())
-            self.assertEqual(log.read_text().count('unique-warning'), 1)
-            self.assertNotIn('Stage', log.read_text())
 
     def test_cached_discovery_and_destination(self):
         """Reuse initial discovery and select the reported local Mac.

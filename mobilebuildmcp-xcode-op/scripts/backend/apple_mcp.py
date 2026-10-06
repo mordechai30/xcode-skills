@@ -34,7 +34,7 @@ class MCPClient:
         # Server diagnostics collected independently of JSON-RPC.
         self.stderr_lines = queue.Queue()
         self.stderr_parser = StreamDiagnostics()
-        # Retained sessions deliver diagnostics directly to their operation log.
+        # Retained sessions deliver diagnostics directly to the public response.
         self.diagnostic_sink = None
         # Tool-list changes invalidate the current schema cache.
         self.tools_changed = False
@@ -98,7 +98,7 @@ class MCPClient:
                 break
 
     def set_diagnostic_sink(self, sink):
-        """Send retained-session stderr directly to its diagnostic log.
+        """Send retained-session stderr directly to bounded public diagnostics.
         Flush startup diagnostics once before discarding queue storage.
         """
         self.diagnostic_sink = sink
@@ -156,7 +156,7 @@ class MCPClient:
             return message.get("result", {})
         raise TimeoutError(f"Apple MCP {method} exceeded {self.timeout} seconds.")
 
-    def call(self, name, arguments, before_send=None, timeout=None):
+    def call(self, name, arguments, timeout=None):
         """Validate live supported and required fields before invoking a tool.
         Return one useful result representation and preserve remote errors.
         """
@@ -192,8 +192,6 @@ class MCPClient:
                     raise RuntimeError('Current ' + name + ' schema maximum exceeded for ' + key)
                 if 'minimum' in definition and value < definition['minimum']:
                     raise RuntimeError('Current ' + name + ' schema minimum exceeded for ' + key)
-        if before_send:
-            before_send()
         previous_timeout = self.timeout
         try:
             if timeout is not None:

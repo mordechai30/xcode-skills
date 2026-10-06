@@ -74,4 +74,4 @@ On supported routes, add `--arguments --mode test` to replace saved arguments. B
 ./scripts/cleanup.sh /path/Package
 ```
 
-Use Kill for app termination. Cleanup removes only non-log content in this skill's artifact folder. It never runs automatically and performs no session checks.
+Use Kill for app termination. Cleanup removes artifacts in this skill's artifact folder. It never runs automatically and performs no session checks.

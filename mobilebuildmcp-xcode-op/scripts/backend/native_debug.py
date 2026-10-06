@@ -44,8 +44,8 @@ def launch(args, ctx, product):
         while not (folder / 'd.sock').exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(.05)
         if not (folder / 'd.sock').exists():
-            raise RuntimeError('LLDB controller did not initialize; Inspect the operation log.')
-        launched = request(ctx, 'launch', executable=product['executable'], working_directory=working, arguments=arguments, log=str(ctx['log']))
+            raise RuntimeError('LLDB controller did not initialize; use Status or Kill.')
+        launched = request(ctx, 'launch', executable=product['executable'], working_directory=working, arguments=arguments)
         if launched['status'] != 'success':
             return launched
         pid = launched['pid']

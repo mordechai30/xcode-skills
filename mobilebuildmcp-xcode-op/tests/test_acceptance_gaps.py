@@ -162,7 +162,8 @@ class AcceptanceGapTests(unittest.TestCase):
         ctx = {}
         drain(os.fdopen(read, 'rb'), ctx, 'Compiler')
         self.assertIn('final failure', ctx['last_diagnostic'])
-        self.assertEqual(len(ctx['evidence']), 1)
+        self.assertNotIn('evidence', ctx)
+        self.assertIn('final failure', ctx['public_error'])
 
     def test_unknown_app_still_cleans_verified_helpers(self):
         backend=Mock()

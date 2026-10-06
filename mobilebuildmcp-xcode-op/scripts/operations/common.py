@@ -137,7 +137,7 @@ def save_session(ctx, value):
         value['selection'] = {key:item for key,item in value['selection'].items() if key != 'arguments'}
     if value.get('product'):
         value['product'] = {key: value['product'][key] for key in ('status', 'product', 'executable', 'configuration', 'target', 'bundle_identifier') if key in value['product']}
-    value = {key: value[key] for key in ('status', 'state', 'app', 'debugger', 'dedicated', 'selection', 'product', 'log', 'breakpoints', 'current_debug_state') if key in value}
+    value = {key: value[key] for key in ('status', 'state', 'app', 'debugger', 'dedicated', 'selection', 'product', 'breakpoints', 'current_debug_state') if key in value}
     ctx['session'] = value
     atomic_json(ctx['data_dir'] / 'session.json', value)
     atomic_json(ctx['active_path'], {'data_dir': str(ctx['data_dir']),

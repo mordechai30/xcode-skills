@@ -10,7 +10,7 @@ from backend.apple_mcp import MCPClient
 from lifecycle.process import capture_identity, verify_identity, traced
 from lifecycle.schemes import configured
 from lifecycle.diagnostics import record, diagnostics
-from lifecycle.state import append_log, atomic_json
+from lifecycle.state import atomic_json
 from lifecycle.output import record_detail
 
 
@@ -71,19 +71,16 @@ def decode(value):
 
 def call(ctx, name, arguments=None):
     """Invoke one live-schema tool on the retained workspace connection.
-    Only the stage and useful diagnostics enter the operation log.
+    Only useful diagnostics reach the public response.
     """
     arguments = dict(arguments or {})
     if name != 'XcodeOpenWorkspace' and ctx['runtime'].get('workspace'):
         arguments['workspaceIdentifier'] = ctx['runtime']['workspace']
     connection = client(ctx)
-    marker = ctx.get('mark_build') if name in ('BuildProject', 'RunProject') else None
     try:
-        value = connection.call(name, arguments, before_send=marker,
+        value = connection.call(name, arguments, 
                                 timeout=request_timeout(ctx, 60 if name in ('BuildProject', 'RunProject', 'XcodeOpenWorkspace') else 15))
     except (RuntimeError, OSError, TimeoutError) as error:
-        if ctx.get('log'):
-            append_log(ctx['log'], name, str(error))
         raise type(error)(name + ': ' + str(error)) from error
     # Debugger output belongs only in the bounded public response.
     record(ctx, name, {} if name == 'InvokeDebuggerCommand' else value)
@@ -138,7 +135,7 @@ def setup(ctx):
 
 def settings(ctx):
     """Read the selected target's actual Apple Build context.
-    Configuration mismatch prevents Build, Clean, and product claims.
+    Configuration mismatch prevents Build and product claims.
     """
     setup(ctx)
     if ctx['runtime'].get('apple_settings'):
@@ -149,12 +146,11 @@ def settings(ctx):
         macros = {row['macroName']: row.get('evaluatedValue', row.get('value')) for row in rows}
         if macros.get('CONFIGURATION') and macros['CONFIGURATION'] != ctx['selection']['configuration']:
             raise RuntimeError('Existing scheme uses ' + str(macros.get('CONFIGURATION')) + '; requested ' + ctx['selection']['configuration'] + '. Select a matching scheme.')
-        if not macros.get('OBJROOT') or not macros.get('SYMROOT'):
-            raise RuntimeError('Apple settings omitted the actual Build roots needed for native Clean.')
         selection = ctx['selection']
         command = ['xcrun', 'xcodebuild', *native._container(ctx), '-scheme', selection['scheme'],
                    '-configuration', selection['configuration'], '-destination', ctx['runtime']['native_destination'],
-                   'OBJROOT=' + macros['OBJROOT'], 'SYMROOT=' + macros['SYMROOT'], '-showBuildSettings', '-json']
+                   '-showBuildSettings', '-json']
+        command.extend(key+'='+macros[key] for key in ('OBJROOT','SYMROOT') if macros.get(key))
         if selection.get('generated_scheme'):
             index = command.index('-configuration')
             del command[index:index + 2]
@@ -168,7 +164,7 @@ def settings(ctx):
                and row.get('CONFIGURATION') == ctx['selection']['configuration']]
     if len(matches) != 1:
         raise RuntimeError('Apple build settings do not establish exactly one app in the selected configuration.')
-    fields = ('TARGET_BUILD_DIR','EXECUTABLE_PATH','FULL_PRODUCT_NAME','CONFIGURATION','SYMROOT','OBJROOT','CONFIGURATION_BUILD_DIR')
+    fields = ('TARGET_BUILD_DIR','EXECUTABLE_PATH','FULL_PRODUCT_NAME','CONFIGURATION')
     ctx['runtime']['apple_settings'] = {key:matches[0][key] for key in fields if key in matches[0]}
     return ctx['runtime']['apple_settings']
 
@@ -184,19 +180,6 @@ def resolve_product(args, ctx):
             'executable': str(executable), 'product': str(product), 'configuration': values['CONFIGURATION']}
 
 
-def clean(args, ctx):
-    """Clean with native xcodebuild using the actual Apple Build paths.
-    An unavailable context blocks Clean instead of substituting a location.
-    """
-    values = settings(ctx)
-    selection = ctx['selection']
-    command = ['xcrun', 'xcodebuild', *native._container(ctx), '-scheme', selection['scheme'],
-               '-configuration', selection['configuration'], '-destination', ctx['runtime']['native_destination']]
-    for key in ('SYMROOT', 'OBJROOT', 'CONFIGURATION_BUILD_DIR'):
-        if key not in values:
-            raise RuntimeError('Apple Clean context is missing ' + key)
-        command.append(key + '=' + values[key])
-    return native._call(command + ['clean'], ctx=ctx)
 
 
 def build_evidence(value):

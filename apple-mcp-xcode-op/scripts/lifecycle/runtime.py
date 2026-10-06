@@ -13,7 +13,7 @@ import time
 from lifecycle.channel import connect
 from lifecycle.output import collect, capture_process
 from lifecycle.process import capture_identity
-from lifecycle.state import append_log, atomic_json, read_json
+from lifecycle.state import atomic_json, read_json
 from operations.common import ask, context, resolve_selection, observe
 
 
@@ -37,6 +37,7 @@ def serve(folder, root, dispatch):
     ctx = context(args, root)
     ctx.update(data_dir=folder, selection=bootstrap['selection'], discovery=bootstrap['discovery'],
                runtime_identity=capture_identity(os.getpid()))
+    ctx.update(bootstrap.get('diagnostics', {}))
     del bootstrap, args
     os.chdir(folder)
     with socket.socket(socket.AF_UNIX) as server:
@@ -61,8 +62,6 @@ def serve(folder, root, dispatch):
                             if ctx.get('public_'+kind):
                                 value[kind] = ctx.pop('public_'+kind)
                                 ctx.pop('public_'+kind+'_count',None)
-                    if value.get('state') != 'running' and ctx.get('log'):
-                        append_log(ctx['log'], 'Watch ended', value.get('state', 'uncertain'))
                 else:
                     request = namespace(message)
                     conflict = message['operation'] != 'run' and any(message.get(key) and str(message[key]) != str(ctx['selection'].get(key))
@@ -75,8 +74,7 @@ def serve(folder, root, dispatch):
                 try:
                     channel.sendall((json.dumps(value, default=str) + '\n').encode())
                 except (BrokenPipeError, ConnectionResetError):
-                    if ctx.get('log'):
-                        append_log(ctx['log'], 'Client disconnected', 'Session remains available after reply loss.')
+                    pass
             if not ctx.get('session') and message.get('operation') in ('kill', 'run'):
                 close = getattr(ctx['backend'], 'close', None)
                 if close:
@@ -109,11 +107,10 @@ def start(args, root):
             folder.joinpath('m.sock').unlink(missing_ok=True)
     if folder.joinpath('m.sock').exists():
         return ask('App control is not closed. Use Kill before another Run.')
-    if ctx.get('evidence'):
-        (folder / 'preflight-output.txt').write_text('\n'.join(ctx['evidence']))
     saved_args = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
     atomic_json(folder / 'runtime-request.json', {'args': saved_args, 'selection': ctx['selection'],
-                                                'discovery': ctx['discovery']})
+                                                'discovery': ctx['discovery'],
+                                                'diagnostics': {key:ctx[key] for key in ('public_warning','public_error','public_warning_count','public_error_count') if key in ctx}})
     close = getattr(ctx['backend'], 'close', None)
     if close:
         close(ctx)

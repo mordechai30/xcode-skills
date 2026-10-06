@@ -92,7 +92,7 @@ class Adapter:
 
     def setup(self, ctx):
         """Select the destination that discovery and the user resolved.
-        Verify the actual Apple selection before Clean, Build, or Run.
+        Verify the actual Apple selection before Build or Run.
         """
         if ctx.setdefault('runtime', {}).get('package_destination'):
             return
@@ -120,13 +120,6 @@ class Adapter:
                         atomic_json(ctx['data_dir'] / ('package-path-' + s['configuration'] + '.json'), {'executable': str(path)})
 
 
-    def clean(self, args, ctx):
-        """Clean through the selected Mobile package route.
-        Apple Debug uses the matching native scheme Clean fallback.
-        """
-        if self.apple_route(args):
-            return self.apple_clean(args, ctx)
-        return self.base.tool(ctx, 'swift_package_clean', {'packagePath': ctx['selection']['package']})
 
 
     def build(self, args, ctx):
@@ -189,14 +182,6 @@ class Adapter:
         """
         return self.bridge(ctx).debug_action(ctx, action, **values)
 
-    def apple_clean(self, args, ctx):
-        """Clean the selected Apple package scheme or native Release package.
-        Match the route that will perform Build.
-        """
-        self.setup(ctx)
-        workspace = str(Path(ctx['selection']['package']) / '.swiftpm/xcode/package.xcworkspace')
-        return native._call(['xcrun', 'xcodebuild', '-workspace', workspace, '-scheme', ctx['selection']['scheme'],
-                            '-configuration', args.configuration, '-destination', 'platform=macOS', 'clean'], timeout=60, ctx=ctx)
 
 
     def apple_resolve_product(self, args, ctx):
@@ -262,8 +247,7 @@ class Adapter:
             return values
         from backend.apple import decode
         raw = connection.call('session_set_defaults', {'configuration': configuration, 'persist': False}, timeout=60)
-        if ctx.get('log'):
-            record(ctx, 'Package defaults', raw)
+        record(ctx, 'Package defaults', raw)
         response = decode(raw)
         if response.get('didError') or response.get('error'):
             raise RuntimeError('Mobile rejected package configuration defaults: ' + str(response))

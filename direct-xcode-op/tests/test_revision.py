@@ -13,48 +13,13 @@ from lifecycle.output import collect
 from operations.common import observe
 from operations.kill import execute, recover
 from operations.set_breakpoint import execute as set_breakpoint
-from lifecycle.state import atomic_json, new_log
+from lifecycle.state import atomic_json
 
 
 class RevisionTests(unittest.TestCase):
     """Check revised outcomes with disposable records and fake backends.
     No live debugger or app process is created by these tests.
     """
-    def test_same_second_log_waits_without_overwriting(self):
-        """Advance to the next filename second after a collision.
-        Preserve the first log's bytes and the exact filename format.
-        """
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            start = datetime.now().astimezone().replace(microsecond=0)
-            first = folder / ('log-fixture-Debug-' + start.strftime('%y-%m-%d-%H-%M-%S') + '.txt')
-            first.write_text('preserved')
-            with patch('lifecycle.state.datetime') as clock, patch('lifecycle.state.time.sleep'):
-                clock.now.side_effect = [start, start + timedelta(seconds=1)]
-                second, _ = new_log(folder, 'fixture', 'Debug')
-            self.assertNotEqual(first, second)
-            self.assertEqual(first.read_text(), 'preserved')
-            self.assertEqual(second.name, 'log-fixture-Debug-' + (start + timedelta(seconds=1)).strftime('%y-%m-%d-%H-%M-%S') + '.txt')
-    def test_app_logs_only_new_diagnostics(self):
-        """Retain app diagnostics and exclude ordinary output.
-        Repeated collection must not duplicate earlier output.
-        """
-        with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            import os
-            from lifecycle.output import drain
-            log = folder / 'log.txt'
-            ctx = {'log': log, 'data_dir': folder, 'runtime': {}}
-            read, write = os.pipe()
-            os.write(write, b'hello\nwarning: first\nworld\nerror: second\n')
-            os.close(write)
-            drain(os.fdopen(read, 'rb'), ctx, 'App diagnostics')
-            collect(ctx)
-            self.assertFalse((folder / 'app-output.txt').exists())
-            self.assertNotIn('hello', log.read_text())
-            self.assertNotIn('world', log.read_text())
-            self.assertEqual(log.read_text().count('warning: first'), 1)
-            self.assertEqual(log.read_text().count('error: second'), 1)
 
     def test_resolution_is_not_a_hit(self):
         """Record actual paused breakpoint causes only.

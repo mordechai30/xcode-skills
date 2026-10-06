@@ -40,10 +40,9 @@ class PackageTests(unittest.TestCase):
         """Build exactly the selected product and configuration.
         Keep a package path containing spaces as one command argument.
         """
-        ctx = {'selection': {'package': '/fixture/With Space', 'target': 'App', 'configuration': 'Release'}, 'mark_build': Mock()}
+        ctx = {'selection': {'package': '/fixture/With Space', 'target': 'App', 'configuration': 'Release'}}
         with patch.object(native, '_call', return_value={'status': 'success'}) as call:
             Adapter(native).build(Namespace(configuration='Release'), ctx)
-        ctx['mark_build'].assert_called_once()
         self.assertEqual(call.call_args.args[0], ['swift', 'build', '--package-path', '/fixture/With Space', '--configuration', 'release', '--product', 'App'])
 
     def test_apple_release_uses_authorized_native_fallback(self):
@@ -65,7 +64,7 @@ class PackageTests(unittest.TestCase):
 
     def test_apple_destination_mismatch_blocks_operation(self):
         """Check Apple's actual destination selection before execution.
-        A different destination must not permit Clean, Build, or launch.
+        A different destination must not permit Build or launch.
         """
         adapter = Adapter(SimpleNamespace(__name__='backend.apple'))
         bridge = Mock()
@@ -111,7 +110,7 @@ class PackageTests(unittest.TestCase):
         backend.launch.return_value = {'status': 'success', 'state': 'not_launched'}
         ctx = {'backend': backend, 'discovery': True, 'session': None, 'runtime': {}, 'data_dir': Path('/fixture')}
         args = Namespace(configuration='Debug')
-        with patch('operations.run.context', return_value=ctx), patch('operations.run.prepare', return_value={'status': 'success'}), \
+        with patch('operations.run.context', return_value=ctx), \
              patch('operations.run.perform', return_value={'status': 'success'}) as build, \
              patch('operations.run.finish', return_value={'status': 'success'}), \
              patch('operations.run.resolve_selection', return_value={'status': 'success'}), patch('operations.run.pending'), patch('operations.run.save_session'):

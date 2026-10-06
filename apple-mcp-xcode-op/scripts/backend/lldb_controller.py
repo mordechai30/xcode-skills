@@ -52,8 +52,8 @@ def handle(debugger, request, owned):
             raise RuntimeError('LLDB could not create the selected target.')
         launch = lldb.SBLaunchInfo(request.get('arguments', []))
         launch.SetWorkingDirectory(request['working_directory'])
-        launch.AddOpenFileAction(1, capture_fifo(os.path.abspath('app-output.pipe'), request['log']), False, True)
-        launch.AddOpenFileAction(2, capture_fifo(os.path.abspath('app-error.pipe'), request['log']), False, True)
+        launch.AddOpenFileAction(1, capture_fifo(os.path.abspath('app-output.pipe')), False, True)
+        launch.AddOpenFileAction(2, capture_fifo(os.path.abspath('app-error.pipe')), False, True)
         error = lldb.SBError()
         process = target.Launch(launch, error)
         if error.Fail():

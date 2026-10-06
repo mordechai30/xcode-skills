@@ -10,7 +10,6 @@ import subprocess
 import signal
 from lifecycle.output import capture_process
 
-from lifecycle.state import append_log
 from lifecycle.diagnostics import record, diagnostics
 from backend.native_debug import launch, close, request
 
@@ -59,7 +58,7 @@ def _call(command, timeout=7200, cwd=None, ctx=None):
     """Run one native command with a bounded wait.
     Keep diagnostic blocks and discard ordinary command output.
     """
-    streaming = ctx is not None and ('build' in command or 'clean' in command) and '--show-bin-path' not in command
+    streaming = ctx is not None and 'build' in command and '--show-bin-path' not in command
     if streaming:
         return stream_command(command, timeout, ctx, cwd=cwd)
     try:
@@ -159,7 +158,7 @@ def discover(args, ctx):
 
 def _args(args, ctx, action):
     """Create a command from the resolved Build selection.
-    Use the same derived-data location for Build and Clean.
+    Use the selected derived-data location for Build.
     """
     selection = ctx["selection"]
     data = ctx["data_dir"]
@@ -171,12 +170,6 @@ def _args(args, ctx, action):
             "-derivedDataPath", str(derived), *architecture, action]
 
 
-def clean(args, ctx):
-    """Clean the selected scheme and configuration.
-    Capture the complete native result for prerequisite and failure handling.
-    """
-    result = _call(_args(args, ctx, "clean"), ctx=ctx)
-    return result
 
 
 def build(args, ctx):
@@ -184,7 +177,6 @@ def build(args, ctx):
     Mark history only at the backend invocation boundary.
     """
     command = _args(args, ctx, 'build')
-    ctx['mark_build']()
     result = _call(command, ctx=ctx)
     return result
 
@@ -226,7 +218,7 @@ def resolve_product(args, ctx):
 
 
 def stream_command(command, timeout, ctx, cwd=None):
-    """Consume native Build/Clean output through diagnostic-only pipe readers.
+    """Consume native Build output through diagnostic-only pipe readers.
     Compiler transcripts are discarded instead of accumulated in memory.
     """
     ctx.pop('last_diagnostic', None)

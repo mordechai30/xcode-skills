@@ -1,9 +1,7 @@
-"""Keep stages and reported diagnostics in operation logs.
-Successful backend payloads and ordinary app output are not log content.
+"""Extract useful diagnostics for bounded public responses.
+Successful backend payloads and ordinary app output are discarded.
 """
 import re
-from lifecycle.state import append_log
-
 # Match diagnostic labels, not build-setting names such as WARNINGS_AS_ERRORS.
 LABEL = re.compile(r'\b(?:warning|error|fatal error)\b\s*[:\-]|\b(?:failed|failure)\b\s*:|\*\* .*FAILED|^\s*(?:Error|Warning):|\bfailed with exit code\b|^\s*Build failed\b|Undefined symbols|duplicate symbol', re.I)
 
@@ -74,7 +72,7 @@ def diagnostics(value):
 
 def record(ctx, stage, value):
     """Extract useful diagnostics once and discard the backend envelope.
-    Backend setup stages are not public operation status and are not logged.
+    Backend setup stages are not public operation status.
     """
     detail = diagnostics(value)
     if detail:

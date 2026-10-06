@@ -11,7 +11,7 @@ import time
 
 from lifecycle.channel import connect
 from lifecycle.process import verify_identity
-from lifecycle.state import append_log, operation_lock, read_json
+from lifecycle.state import operation_lock, read_json
 from lifecycle.output import collect
 from lifecycle.response import emit, render
 from operations import build, run, set_breakpoint, pause, continue_session, kill, debugger_command, status
@@ -107,7 +107,7 @@ def validate(args):
 
 def dispatch(args, ctx):
     """Call one imported operation against the retained context.
-    Record the outcome and useful errors in the session log.
+    Surface the outcome and useful errors in the public response.
     """
     args._context = ctx
     deadline = getattr(args, '_deadline', None)
@@ -121,8 +121,6 @@ def dispatch(args, ctx):
     except Exception as error:
         value = {'status': 'uncertain', 'message': str(error)}
     ctx.pop('request_deadline', None)
-    if ctx.get('log'):
-        value.setdefault('log', str(ctx['log']))
     collect(ctx)
     for kind in ('warning','error'):
         if ctx.get('public_'+kind):
@@ -198,31 +196,18 @@ def main():
             result.update(status=state.get('status', 'uncertain'), _interrupted=True, **stop_fields(state))
         except (OSError, RuntimeError) as error:
             result.update(status='uncertain', state='uncertain', message='Watching stopped. Use Status or Kill.')
-    log = result.get('log')
-    if not log and locator:
-        saved = read_json(Path(locator['data_dir']) / 'session.json', {})
-        log = saved.get('log')
     result['_detail'] = args.detail
     text = render(result, args.operation)
-    if log:
-        append_log(Path(log), 'Public response', text)
     emit(text)
     return 0 if result.get('status') == 'success' else 1
 
 
 def emit_exception(result):
-    """Emit one bounded exceptional response and retain its exact bytes.
-    Use existing ownership state only; do not issue another backend request.
+    """Emit one bounded exceptional response.
+    Do not query the backend again after interruption.
     """
     operation = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in OPERATIONS else ''
     text = render(result, operation)
-    try:
-        locator = read_json(ROOT / '.active-session.json', {})
-        saved = read_json(Path(locator['data_dir']) / 'session.json', {}) if locator else {}
-        if saved.get('log'):
-            append_log(Path(saved['log']), 'Public response', text)
-    except (OSError, RuntimeError, KeyError):
-        pass
     emit(text)
 
 
