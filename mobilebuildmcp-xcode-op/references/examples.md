@@ -1,77 +1,63 @@
-# Arguments and examples
+# Arguments and prerequisites
 
 ## Arguments
 
-Run outside sandbox restrictions. `--configuration Debug|Release` and one container are required for Build/Run. All paths resolve from the caller's directory.
+Require macOS, Python 3.10+, and a selected Xcode installation with its first-launch setup complete.
+Check `python3 --version`, `xcode-select -p`, and `xcrun --find xcodebuild`; use the intended developer
+installation. Require `xcrun --find swift` for packages and `xcrun --find lldb` for native Debug.
+Require a writable installed skill root for private state and a writable project artifact directory.
+Report missing prerequisites instead of installing/upgrading unrelated tooling or substituting a backend.
 
-| Option | Use |
+Run all commands outside sandbox restrictions. Resolve inputs from the caller's working directory.
+Run from the skill root or use the absolute path to `scripts/manager.py`.
+
+Supply selectors and flags only on operations/routes that support them:
+
+| Input | Use |
 |---|---|
-| `--project PATH.xcodeproj` | Xcode project |
-| `--workspace PATH.xcworkspace` | Xcode workspace |
-| `--package DIR` | Folder containing Package.swift |
-| `--scheme NAME`, `--target NAME` | Xcode selection; omit when unique |
-| `--product NAME` | Package executable; omit when unique |
-| `--destination VALUE` | Returned destination; My Mac for local Run |
-| `--arguments ARG…` | Run without a debugger; put last; replaces saved arguments |
-| `--working-directory DIR` | Not supported |
-| `--derived-data DIR` | Xcode Build and debugger-free Run; default skill artifact folder/DerivedData |
-| `--architecture arm64\|x86_64` | Xcode Build and debugger-free Run; default discovered destination |
-| `--no-debugger` | Debug Run without a debugger |
-| `--file PATH --line NUMBER` | Breakpoint; existing file and positive line |
-| `--keep-breakpoint` | Continue and watch the next hit |
-| `--command TEXT --detail` | Requested inspection with optional 500-byte limit |
+| `--project PATH.xcodeproj` | Select an Xcode project. |
+| `--workspace PATH.xcworkspace` | Select an Xcode workspace. |
+| `--package DIR` | Select a directory containing `Package.swift`. |
+| `--configuration Debug\|Release` | Require an explicit configuration for Build/Run. |
+| `--scheme NAME`, `--target NAME` | Select Xcode scheme/target; omit only when unique. |
+| `--product NAME` | Select a package executable; omit only when unique. |
+| `--destination VALUE` | Use a returned supported destination; use My Mac for local Xcode Run. |
+| `--no-debugger` | Run Debug without its debugger. |
+| `--arguments ARG...` | Put last on supported Run routes; replace saved arguments, or clear them with a bare flag. |
+| `--file PATH --line NUMBER` | Set a breakpoint at an existing source file and positive line. |
+| `continue --keep-breakpoint` | Retain the responsible owned breakpoint and watch again. |
+| `debugger-command --command TEXT [--detail]` | Request LLDB output; raise its response budget to 500 bytes with `--detail`. |
 
-Debugger-enabled Debug Run rejects `--arguments`, `--derived-data`, and `--architecture`. Debugger-free Run and Release Run accept `--arguments`; Xcode Build and debugger-free Run also accept `--derived-data` and `--architecture`. Working-directory overrides are unsupported. SwiftPM does not accept `--derived-data` or `--architecture`.
-Do not use package `--scheme` or `--target`, or Xcode `--product`. Unsupported and irrelevant inputs fail before compilation.
+Supply exactly one container selector. Resolve ambiguous choices from discovery.
+Do not use package scheme/target or Xcode product selectors. Native SwiftPM uses the current host.
+Without explicit arguments, use enabled saved Xcode arguments, or none for a package.
+Use `COMMAND --help` for a short summary. Unsupported/irrelevant inputs fail before Clean or Build.
+Narrow inspection requests when output is omitted.
 
-## Build and Run
+## Route options
+
+Require `mobilebuildmcp` on PATH and its `mcp` command, with macos, xcode-ide, and swift-package workflows.
+Require Apple's available MCP bridge for debugger-enabled Debug Run.
+
+| Route | Supported overrides |
+|---|---|
+| Debugger-enabled Debug Run | Reject `--arguments`, `--derived-data`, and `--architecture`. |
+| Debugger-free Run, including Release | Accept `--arguments`. |
+| Xcode Build and debugger-free Xcode Run | Also accept `--derived-data DIR` and `--architecture arm64\|x86_64`. |
+| SwiftPM | Reject derived-data and architecture overrides. |
+
+Reject working-directory overrides on every route. Default Xcode derived data to the skill artifact
+folder/DerivedData and architecture to the discovered destination.
+
+## Inspection example
+
+Run the selected app, set a breakpoint at a relevant existing source line, and verify the actual stop.
+Adapt the expression to a variable in its paused frame:
 
 ```bash
-./scripts/manager.py build --project /path/App.xcodeproj --configuration Debug
-./scripts/manager.py run --project /path/App.xcodeproj --configuration Debug
-./scripts/manager.py status
-./scripts/manager.py kill
-```
-
-Examples: `Build succeeded.`; `Run succeeded.`; `Status: running.`; `Kill succeeded.` Warnings and errors follow the result. An ambiguous selection names the choices; supply the appropriate option.
-
-## Debug
-
-```bash
-./scripts/manager.py run --package /Users/motyzas/src/skill-test-projects/HelloSwiftPackage --configuration Debug --product HelloSwift
-./scripts/manager.py set-breakpoint --file /Users/motyzas/src/skill-test-projects/HelloSwiftPackage/Sources/HelloSwift/main.swift --line 9
 ./scripts/manager.py debugger-command --command "frame variable tick"
-./scripts/manager.py continue
-./scripts/manager.py pause
-./scripts/manager.py continue
-./scripts/manager.py kill
-```
-
-Inspect only after a verified stop. The fixture updates tick on line 9. A pending breakpoint is installed but has not resolved; use Status and wait for a stop before inspection. A hit reports the short source location. Continue removes only the responsible owned breakpoint. Use `continue --keep-breakpoint` to stop there again.
-
-For a bounded stack:
-
-```bash
 ./scripts/manager.py debugger-command --command "thread backtrace -c 3" --detail
 ```
 
-Inspection reports the requested output and any command error. `…` marks omitted text; inspect fewer members or frames. Omitted data is not archived.
-
-## Release and arguments
-
-```bash
-./scripts/manager.py run --package /path/Package --configuration Release --product Product
-./scripts/manager.py status
-./scripts/manager.py kill
-```
-
-On supported routes, add `--arguments --mode test` to replace saved arguments. Bare trailing `--arguments` clears them. Quote values containing spaces. The supplied HelloSwiftPackage fixture accepts `--exit` for immediate exit. Run or subsequent Status reports the observed exit.
-
-## Cleanup
-
-```bash
-./scripts/cleanup.sh /path/App.xcodeproj
-./scripts/cleanup.sh /path/Package
-```
-
-Use Kill for app termination. Cleanup removes only non-log content in this skill's artifact folder. It never runs automatically and performs no session checks.
+A resolved location is not evidence that the app hit it. Use Status to verify uncertain state.
+Do not repeat a partially completed debugger command automatically.

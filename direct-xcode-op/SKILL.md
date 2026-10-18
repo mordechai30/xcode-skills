@@ -1,36 +1,92 @@
 ---
 name: direct-xcode-op
-description: Build, run, and debug macOS Xcode apps and SwiftPM executables with Native Xcode and LLDB. Use for source breakpoints, inspection, Pause, Continue, Status, and owned-session termination.
+description: >-
+  Build, run, and debug macOS Xcode apps and SwiftPM executables with native Xcode and LLDB.
+  Use for breakpoints, inspection, Pause, Continue, Status, and owned-session termination.
 ---
 
-# Native Xcode and LLDB operations
+# macOS operations with native Xcode and LLDB
 
-**All scripts and CLI commands must run outside sandbox restrictions.**
-Use one skill at a time, on one project, with one configuration. Run from this skill root or use the entrypoint's absolute path. Input paths resolve from your current directory.
+Run all scripts and CLI commands outside sandbox restrictions.
+Do not read scripts unless the user explicitly asks; use their documented command interfaces.
+Use one skill at a time, on one project and configuration. Run from this skill root or use absolute
+entrypoint paths. Resolve input paths from the caller's directory.
+Report material contradictions, missing prerequisites/artifacts, errors, and unverified outcomes.
+Retain only task-relevant decisions, evidence, session identifiers, and unresolved issues in working
+summaries. Discard irrelevant outputs from later summaries; preserve requested deliverables.
+
+## Before Build or Run
+
+Read [arguments and prerequisites](references/examples.md#arguments) for route-specific inputs.
+Read [side effects and artifacts](references/backend.md#side-effects-and-artifacts) before the first operation
+on a project. Build can automatically Clean.
+Kill an existing owned session before another Build or Run. Do not retry failed or uncertain requests
+automatically. Use My Mac for local Xcode Run.
+Debug enables the debugger unless `--no-debugger` is supplied; Release does not enable it.
+
+## Commands
+
+Use `CONTAINER` for one container selector and `CONFIG` for Debug or Release.
 
 | Action | Command | Effect |
 |---|---|---|
-| Build only | `./scripts/manager.py build CONTAINER --configuration CONFIG` | Build the selected configuration without launching. |
-| Build and Run | `./scripts/manager.py run CONTAINER --configuration CONFIG [--no-debugger]` | Build and launch the selected product; Debug enables the debugger by default. |
-| App state | `./scripts/manager.py status` | Report the owned app state. |
-| Source breakpoint | `./scripts/manager.py set-breakpoint --file PATH --line NUMBER` | Set a source breakpoint; watch the running app when the breakpoint resolves. |
-| Pause | `./scripts/manager.py pause` | Pause a running app in a debugger-enabled Debug session. |
-| Continue | `./scripts/manager.py continue [--keep-breakpoint]` | Resume a paused app; remove the responsible owned breakpoint unless `--keep-breakpoint` is supplied. |
-| Inspect | `./scripts/manager.py debugger-command --command "LLDB COMMAND" [--detail]` | Execute the requested LLDB command and return its output and errors. |
-| Kill app and dedicated helpers | `./scripts/manager.py kill` | Terminate the owned app and verified dedicated helpers, including a dedicated headless parent; release the session. |
-| Remove artifacts | `./scripts/cleanup.sh PROJECT_OR_PACKAGE_PATH` | Delete session files and build products in this skill's artifact folder; does not terminate processes. |
+| Build | `./scripts/manager.py build CONTAINER --configuration CONFIG` | Build without launching. |
+| Run | `./scripts/manager.py run CONTAINER --configuration CONFIG [--no-debugger]` | Build once and launch the selected product. |
+| Status | `./scripts/manager.py status` | Report owned app state. |
+| Breakpoint | `./scripts/manager.py set-breakpoint --file PATH --line NUMBER` | Set a source breakpoint. |
+| Pause | `./scripts/manager.py pause` | Pause a running debugger-enabled Debug session. |
+| Inspect | `./scripts/manager.py debugger-command --command "LLDB COMMAND" [--detail]` | Return requested output/errors within the response budget. |
+| Continue | `./scripts/manager.py continue [--keep-breakpoint]` | Resume the paused app. |
+| Kill | `./scripts/manager.py kill` | Terminate the owned app and verified dedicated helpers; release the session. |
+| Cleanup | `./scripts/cleanup.sh OWNER_PATH` | Remove stored non-log artifacts; do not terminate processes. |
 
-`CONTAINER` is exactly one of `--project PATH.xcodeproj`, `--workspace PATH.xcworkspace`, or `--package DIRECTORY` containing `Package.swift`. `CONFIG` is `Debug` or `Release`; it is required. Select Xcode with `--scheme NAME` and `--target NAME`; select a package with `--product NAME`. Unique choices are automatic. Follow-up commands need no selection inputs. Use `COMMAND --help` for a short summary.
+Replace `CONTAINER` with exactly one of `--project PATH.xcodeproj`, `--workspace PATH.xcworkspace`,
+or `--package DIR`. Read the arguments reference above for selectors and supported route overrides.
+Apply launch arguments and working-directory overrides only to Run; never pass them to Build.
+Use follow-up commands without repeating selection inputs.
 
-Native Run accepts `--arguments` and `--working-directory` (default: executable folder). Xcode also accepts `--derived-data` and `--architecture`.
-Put `--arguments` last. Omitted arguments use enabled saved Xcode arguments or none for a package. An explicit list replaces them; a bare flag clears them. Unsupported options fail before Clean or Build.
+Use paths and inspection expressions from the actual task; examples do not prescribe app behavior.
+Inspect frame-dependent data only at a verified paused frame.
+A resolved breakpoint on a running app watches until a stop, exit, interruption, or unavailable control.
+Interrupting that watch leaves execution unchanged. Pause has a total 15-second submission limit.
+Continue removes only the responsible owned breakpoint; add `--keep-breakpoint` to retain it and watch again.
+Ask for instruction on unexpected stops. Read [recovery](references/backend.md#recovery) for incomplete work.
 
-Use "My Mac" as the destination for Build and Run. Debug enables the debugger unless `--no-debugger` is supplied; Release does not. Build never launches. Every Run builds once. Kill before another Build or Run. Failed or uncertain requests do not retry automatically.
+## Results and exit codes
 
-A pending breakpoint returns immediately. A resolved breakpoint on a running app watches for a hit, other stop, exit, or interruption. Interrupting the watch does not change execution. Inspection requires a suitable paused frame. Pause has a 15-second submission limit. Continue removes the responsible owned breakpoint; `--keep-breakpoint` retains it and watches again. Unexpected stops require user instruction.
+Read the plain-text response and exit code together; do not expect JSON or infer app state from success.
+For Status, expect `Status: running.`, `paused.`, `exited.`, `unknown.`, or `no app.` with the same prefix.
 
-Responses contain a short result, relevant warnings/errors, and requested inspection data. Normal output is at most **200 UTF-8 bytes**; exceptional errors or `--detail` allow **500**, including newline and stderr. Omitted data is discarded. Use command responses for operation results.
+| Exit | Expected result | Next action |
+|---|---|---|
+| `0` | Operation completed, e.g. `Build succeeded.`; Status reports the observed state. | Use the reported outcome; verify a stop before frame inspection. |
+| `1` | Operation failed, was incomplete, or needs input; read diagnostics and any choices. | Resolve the reported cause/choice; use Status for uncertain state. |
+| `2` | Invalid inputs or an unexpected exception; read the response to distinguish them. | Correct invalid inputs; verify state after an incomplete request. |
+| `130` | Request interrupted outside the watch handler. | Use Status before another operation. |
 
-`manager.py kill` terminates processes. `cleanup.sh PATH` deletes stored skill files. If an app session exists, complete `manager.py kill` before running `cleanup.sh PATH`.
+Treat `Breakpoint needs input.` with a pending-location message as an installed unresolved breakpoint,
+even with exit `1`; do not reinstall it automatically or claim it was hit.
+For an interrupted watch, use its reported state and exit code; the handler can return `0` or `1`.
+Expect relevant warnings/errors and requested inspection data after the result. Expect a 200-byte UTF-8
+response budget, or 500 for failures, uncertainty, or inspection `--detail`, including the final newline.
+Treat `…` as omitted data; narrow an inspection rather than claiming its complete output was inspected.
 
-Agents must not read scripts unless the user explicitly asks. Command help is brief; read [Arguments and examples](references/examples.md#arguments) for full options, route limits, and workflows. Read [Limits and recovery](references/backend.md#backend-limits) when an operation is incomplete.
+## Explicit artifact removal
+
+Complete Kill before cleanup when an app session exists. Cleanup performs no process/session checks.
+Supply an existing owning `.xcodeproj`, package directory, or project-containing folder as `OWNER_PATH`.
+Do not supply a workspace path. For a workspace, obtain the selected target's `PROJECT_FILE_PATH`:
+
+```bash
+xcodebuild -workspace "PATH.xcworkspace" -scheme "SCHEME" -configuration "CONFIG" -showBuildSettings -json
+```
+
+Replace the placeholders with the active selection; match the returned target to the selected target and
+use its `buildSettings.PROJECT_FILE_PATH`. If ownership is missing or ambiguous, stop and ask.
+Read [artifact locations](references/backend.md#side-effects-and-artifacts) for retained files and scope.
+
+| Cleanup exit | Expected stdout | Meaning |
+|---|---|---|
+| `0` | `Cleanup succeeded.` | Removal completed; retained logs remain. |
+| `0` | `Cleanup: no artifacts found.` | No artifact directory existed. |
+| Nonzero | `Cleanup failed.` with a reason for rejected inputs; filesystem diagnostics may appear on stderr. | Validation uses exit `2`; filesystem failures return their error code. Resolve the cause and inspect remaining artifacts before claiming completion. |

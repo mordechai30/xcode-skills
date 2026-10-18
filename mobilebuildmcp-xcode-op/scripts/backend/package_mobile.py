@@ -170,8 +170,8 @@ class Adapter:
 
 
     def close(self, ctx):
-        """Close only the owned Mobile server and bridge.
-        This route creates no native launcher child.
+        """Close the owned Mobile server and bridge, and reap exited direct children.
+        Debugger-free package Run retains a native launcher child for lifecycle cleanup.
         """
         native.close(ctx)
         self.base.close(ctx)
