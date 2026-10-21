@@ -1,28 +1,32 @@
 ---
 name: apple-mcp-xcode-op
-description: >-
+description:
   Build, run, and debug macOS Xcode apps and SwiftPM executables with Apple Xcode MCP.
   Use for breakpoints, inspection, Pause, Continue, Status, and owned-session termination.
 ---
 
 # macOS operations with Apple Xcode MCP
 
-Run all scripts and CLI commands outside sandbox restrictions.
-Do not read scripts unless the user explicitly asks; use their documented command interfaces.
-Use one skill at a time, on one project and configuration. Run from this skill root or use absolute
+- Run all scripts and CLI commands outside sandbox restrictions.
+- If the workspace (the root) has no `.xcodeproj`, `.xcworkspace`, `.xcproj` or `Package.swift`, look in  
+`<root>/xcode`, `<root>/build`, and `<root>/out` before reporting no project found.
+- Do not read scripts unless the user explicitly asks. Use their documented command interfaces (report if  
+anything is missing, ambiguous or not working properly).
+- Use one skill at a time, on one project and configuration. Run from this skill root or use absolute
 entrypoint paths. Resolve input paths from the caller's directory.
-Report material contradictions, missing prerequisites/artifacts, errors, and unverified outcomes.
-Retain only task-relevant decisions, evidence, session identifiers, and unresolved issues in working
+- Report material contradictions, missing prerequisites/artifacts, errors, and unverified outcomes.
+- Retain only task-relevant decisions, evidence, session identifiers, and unresolved issues in working
 summaries. Discard irrelevant outputs from later summaries; preserve requested deliverables.
 
 ## Before Build or Run
 
-Read [arguments and prerequisites](references/examples.md#arguments) for route-specific inputs.
-Read [side effects and artifacts](references/backend.md#side-effects-and-artifacts) before the first operation
+- Read [arguments and prerequisites](references/examples.md#arguments) for route-specific inputs.
+- Read [side effects and artifacts](references/backend.md#side-effects-and-artifacts) before the first operation
 on a project. Build can automatically Clean; Apple debugger routes can create persistent scheme copies.
-Kill an existing owned session before another Build or Run. Do not retry failed or uncertain requests
+- Kill an existing owned session before another Build or Run. Do not retry failed or uncertain requests
 automatically. Use My Mac for local Xcode Run.
-Debug enables the debugger unless `--no-debugger` is supplied; Release does not enable it.
+- Default to Debug build/run if none is specified.
+- Debug enables the debugger unless `--no-debugger` is supplied; Release does not enable it.
 
 ## Commands
 
