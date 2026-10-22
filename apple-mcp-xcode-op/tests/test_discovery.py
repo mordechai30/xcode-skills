@@ -84,5 +84,34 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(calls.call_count, 1)
 
 
+    def test_destination_formats_remain_separate(self):
+        """Select Apple labels without substituting a native destination string.
+        Ambiguous Apple labels require selection; native routes retain their preference.
+        """
+        from types import SimpleNamespace
+        from operations.common import resolve_selection
+        with tempfile.TemporaryDirectory() as folder:
+            native_destination = 'platform=macOS,arch=arm64'
+            found = {'owners': {'App': str(Path(folder) / 'App.xcodeproj')},
+                     'choices': {'scheme': ['App'], 'target': ['App'], 'destination': [native_destination]},
+                     'preferred_destination': native_destination}
+            for options, requested, expected in (
+                    (['My Mac (arm64)', 'Any Mac (arm64)'], 'My Mac', 'My Mac (arm64)'),
+                    (['My Mac (arm64)', 'Any Mac (arm64)'], None, None),
+                    (['My Mac (arm64)', 'My Mac (x86_64)'], 'My Mac', None),
+                    ([], 'My Mac', None),
+                    ([native_destination], 'My Mac', native_destination)):
+                with self.subTest(options=options, requested=requested):
+                    ctx = {'skill': 'fixture', 'discovery': found,
+                           'selection': {'scheme': 'App', 'target': 'App', 'destination': requested},
+                           'backend': SimpleNamespace(discover_destinations=lambda args, ctx: options)}
+                    result = resolve_selection(ctx, Namespace(operation='run'))
+                    self.assertEqual(result['status'], 'success' if expected else 'needs_user_input')
+                    if expected:
+                        self.assertEqual(ctx['selection']['destination'], expected)
+                    else:
+                        self.assertNotIn('Unsupported destination: platform=', result['message'])
+
+
 if __name__ == '__main__':
     unittest.main()

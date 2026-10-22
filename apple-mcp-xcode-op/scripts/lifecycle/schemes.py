@@ -1,6 +1,7 @@
 """Select saved schemes or create persistent configuration copies."""
 from pathlib import Path
 import json
+import os
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -29,19 +30,27 @@ def launch_arguments(selection):
             if item.get('isEnabled') == 'YES']
 
 
-def target_identifier(project, target):
-    """Resolve the saved scheme blueprint from project target names.
-    This reads target identity, not build settings.
+def target_identity(project, target):
+    """Resolve the target blueprint and product reference for a saved scheme.
+    Read target identity, not build settings.
     """
     result = subprocess.run(['plutil', '-convert', 'json', '-o', '-', str(Path(project) / 'project.pbxproj')],
                             capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError('Could not read saved target identity: ' + result.stderr)
-    objects = json.loads(result.stdout)['objects']
+    data = json.loads(result.stdout)
+    objects = data['objects']
     matches = [key for key, value in objects.items() if value.get('isa') == 'PBXNativeTarget' and value.get('name') == target]
     if len(matches) != 1:
         raise ValueError('Select one saved native target identity.')
-    return matches[0]
+    identifier = matches[0]
+    product = objects.get(objects[identifier].get('productReference'), {}).get('path')
+    project = Path(project).resolve()
+    directory = objects.get(data.get('rootObject'), {}).get('projectDirPath') or '.'
+    container = os.path.relpath(project, (project.parent / directory).resolve())
+    configurations = objects.get(objects[identifier].get('buildConfigurationList'), {})
+    default = configurations.get('defaultConfigurationName')
+    return identifier, product, 'container:' + container, default
 
 
 def suitable(path, target, configuration, identifier=None):
@@ -57,8 +66,8 @@ def suitable(path, target, configuration, identifier=None):
 
 
 def configured(selection, skill):
-    """Use an existing scheme; copy a saved scheme only for configuration changes.
-    Live backend settings verify generated schemes; saved originals remain unchanged.
+    """Select a saved launch configuration, creating a target scheme when absent.
+    Preserve saved originals and reuse suitable configuration copies.
     """
     project = Path(selection['owner_project'])
     containers = [project]
@@ -66,16 +75,43 @@ def configured(selection, skill):
         containers.append(Path(selection['workspace']))
     sources = [file for container in containers for file in container.rglob('*.xcscheme')
                if file.stem == selection['scheme']]
-    if not sources:
-        selection['generated_scheme'] = True
-        return selection['scheme']
-    if len(sources) != 1:
+    if len(sources) > 1:
         raise ValueError('Several saved source schemes match the selection.')
-    source = sources[0]
-    identifier = target_identifier(project, selection['target'])
-    if suitable(source, selection['target'], selection['configuration'], identifier):
+    identifier, product, container, default = target_identity(project, selection['target'])
+    if not sources:
+        if not product:
+            raise ValueError('Selected app target has no product reference for a saved scheme.')
+        if not default:
+            raise ValueError('Selected target has no default configuration for its auto-generated scheme.')
+        parsed = ET.ElementTree(ET.Element('Scheme', version='1.3'))
+        build = ET.SubElement(parsed.getroot(), 'BuildAction', parallelizeBuildables='YES',
+                              buildImplicitDependencies='YES')
+        entry = ET.SubElement(ET.SubElement(build, 'BuildActionEntries'), 'BuildActionEntry',
+                              buildForRunning='YES', buildForTesting='YES', buildForProfiling='YES',
+                              buildForArchiving='YES', buildForAnalyzing='YES')
+        reference = dict(BuildableIdentifier='primary', BlueprintIdentifier=identifier,
+                         BuildableName=product, BlueprintName=selection['target'],
+                         ReferencedContainer=container)
+        ET.SubElement(entry, 'BuildableReference', **reference)
+        launch = ET.SubElement(parsed.getroot(), 'LaunchAction',
+                               buildConfiguration=default,
+                               selectedDebuggerIdentifier='Xcode.DebuggerFoundation.Debugger.LLDB',
+                               selectedLauncherIdentifier='Xcode.IDEFoundation.Launcher.LLDB',
+                               launchStyle='0', useCustomWorkingDirectory='NO',
+                               ignoresPersistentStateOnLaunch='NO', debugDocumentVersioning='YES',
+                               allowLocationSimulation='YES')
+        runnable = ET.SubElement(launch, 'BuildableProductRunnable', runnableDebuggingMode='0')
+        ET.SubElement(runnable, 'BuildableReference', **reference)
+        folder = project / 'xcshareddata' / 'xcschemes'
+        folder.mkdir(parents=True, exist_ok=True)
+        source = folder / (selection['scheme'] + '.xcscheme')
+        with source.open('xb') as stream:
+            parsed.write(stream, encoding='UTF-8', xml_declaration=True)
+    else:
+        source = sources[0]
+        parsed = ET.parse(source)
+    if source.exists() and suitable(source, selection['target'], selection['configuration'], identifier):
         return source.stem
-    parsed = ET.parse(source)
     launch = parsed.find('LaunchAction')
     runnable = launch.find('BuildableProductRunnable') if launch is not None else None
     if launch is None or runnable is None or not any(ref.get('BlueprintName') == selection['target'] or ref.get('BlueprintIdentifier') == identifier

@@ -97,8 +97,11 @@ def resolve_selection(ctx, args, need_destination=True):
             options = found.get('choices', {}).get('destination', [])
         selected = ctx['selection'].get('destination')
         preferred = 'My Mac' if 'My Mac' in options else found.get('preferred_destination')
-        if selected == 'My Mac' and preferred:
-            selected = preferred
+        if preferred not in options:
+            preferred = None
+        if selected == 'My Mac' and selected not in options:
+            local = [item for item in options if item.startswith('My Mac (')]
+            selected = preferred or (local[0] if len(local) == 1 else None)
         if selected is None:
             selected = preferred or (options[0] if len(options) == 1 else None)
             if selected is None:

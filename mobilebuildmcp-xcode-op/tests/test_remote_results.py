@@ -42,25 +42,41 @@ class AppleResultTests(unittest.TestCase):
             saved = json.loads((Path(directory) / 'session.json').read_text())
             self.assertEqual(saved['app'], identity)
             self.assertNotIn('launch', saved)
-    def test_generated_configuration_uses_actual_scheme_default(self):
-        """Verify generated schemes without forcing the requested configuration.
-        A default configuration mismatch blocks backend Build and launch.
+    def test_saved_configuration_query_and_mismatch(self):
+        """Keep the requested configuration explicit after selecting a saved scheme.
+        Report a mismatched backend configuration before Build or launch.
         """
         import json
         from backend.apple import settings
-        ctx = {'runtime': {'apple_destination': 'My Mac', 'native_destination': 'platform=macOS'},
-               'selection': {'project': '/App.xcodeproj', 'workspace': None, 'scheme': 'App',
-                             'target': 'App', 'configuration': 'Debug', 'generated_scheme': True}}
-        macros = {'buildSettings': [{'macroName': name, 'evaluatedValue': '/build'} for name in ('OBJROOT','SYMROOT')]}
-        row = {'target': 'App', 'buildSettings': {'PRODUCT_TYPE': 'com.apple.product-type.application', 'CONFIGURATION': 'Debug'}}
-        with patch('backend.apple.call', return_value=macros), patch('backend.apple.native._call', return_value={'status':'success','stdout':json.dumps([row])}) as command:
-            self.assertEqual(settings(ctx)['CONFIGURATION'], 'Debug')
-            self.assertNotIn('-configuration', command.call_args.args[0])
-        ctx['runtime'].pop('apple_settings')
-        row['buildSettings']['CONFIGURATION'] = 'Release'
-        with patch('backend.apple.call', return_value=macros), patch('backend.apple.native._call', return_value={'status':'success','stdout':json.dumps([row])}):
-            with self.assertRaisesRegex(RuntimeError, 'selected configuration'):
-                settings(ctx)
+        for configuration in ('Release', 'Debug'):
+            with self.subTest(configuration=configuration):
+                ctx = {'runtime': {'apple_destination': 'My Mac', 'native_destination': 'platform=macOS'},
+                       'selection': {'project': '/App.xcodeproj', 'workspace': None, 'scheme': 'App',
+                                     'target': 'App', 'configuration': configuration}}
+                macros = {'buildSettings': [{'macroName': name, 'evaluatedValue': '/build'}
+                                            for name in ('OBJROOT', 'SYMROOT')]}
+                row = {'target': 'App', 'buildSettings': {
+                    'PRODUCT_TYPE': 'com.apple.product-type.application', 'CONFIGURATION': configuration}}
+                with patch('backend.apple.call', return_value=macros), patch(
+                        'backend.apple.native._call', return_value={
+                            'status': 'success', 'stdout': json.dumps([row])}) as query:
+                    self.assertEqual(settings(ctx)['CONFIGURATION'], configuration)
+                    command = query.call_args.args[0]
+                    self.assertEqual(command[command.index('-configuration') + 1], configuration)
+                ctx['runtime'].pop('apple_settings')
+                row['buildSettings']['CONFIGURATION'] = 'Debug' if configuration == 'Release' else 'Release'
+                with patch('backend.apple.call', return_value=macros), patch(
+                        'backend.apple.native._call', return_value={
+                            'status': 'success', 'stdout': json.dumps([row])}):
+                    with self.assertRaisesRegex(RuntimeError, 'Requested ' + configuration):
+                        settings(ctx)
+                macros['buildSettings'].append({'macroName': 'CONFIGURATION', 'evaluatedValue':
+                                                row['buildSettings']['CONFIGURATION']})
+                with patch('backend.apple.call', return_value=macros), patch(
+                        'backend.apple.native._call') as query:
+                    with self.assertRaisesRegex(RuntimeError, 'requested ' + configuration):
+                        settings(ctx)
+                    query.assert_not_called()
 
     def test_empty_errors_are_not_success(self):
         """Reject an empty error array as standalone success evidence.

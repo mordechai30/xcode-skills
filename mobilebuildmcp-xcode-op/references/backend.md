@@ -19,10 +19,13 @@ Build advances history and performs Clean without retry; incomplete Clean remain
 Build age uses the invocation log filename, not later writes. Clean can remove backend build products,
 including SwiftPM's package build output or the selected Xcode build roots.
 
-Expect Apple-backed Xcode operations to reuse a suitable saved scheme, or create a configuration-specific
-copy beside it when the saved launch configuration differs. Copies use SOURCE-SKILL-CONFIGURATION with
-a numeric suffix when necessary. They preserve the original and persist after Kill and cleanup.
-Review/remove obsolete generated schemes explicitly; do not remove the user's source schemes.
+Use a saved scheme with the requested Run configuration for Apple-backed Xcode operations. Expect the script
+to save an auto-generated target scheme with its default configuration before making a configuration copy.
+Keep its original name available; Xcode can hide it when another saved scheme references the same target.
+Reuse suitable copies named SOURCE-SKILL-CONFIGURATION; number conflicts.
+Preserve original schemes. Verify the selected configuration before Build or Run; a settings-query override
+alone does not configure an MCP launch. Expect copies to persist after Kill and cleanup; remove obsolete
+copies explicitly.
 
 Use command responses for results. Logs retain useful diagnostics and necessary source context, not raw
 transcripts or omitted inspection output. Ordinary app output is consumed and discarded.

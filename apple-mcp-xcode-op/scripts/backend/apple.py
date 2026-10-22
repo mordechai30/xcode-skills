@@ -155,19 +155,19 @@ def settings(ctx):
         command = ['xcrun', 'xcodebuild', *native._container(ctx), '-scheme', selection['scheme'],
                    '-configuration', selection['configuration'], '-destination', ctx['runtime']['native_destination'],
                    'OBJROOT=' + macros['OBJROOT'], 'SYMROOT=' + macros['SYMROOT'], '-showBuildSettings', '-json']
-        if selection.get('generated_scheme'):
-            index = command.index('-configuration')
-            del command[index:index + 2]
         resolved = native._call(command, timeout=60, ctx=ctx)
         if resolved['status'] != 'success':
             raise RuntimeError('Computed Apple Build paths could not be established: ' + resolved['raw'])
         matches = [row['buildSettings'] for row in json.loads(resolved['stdout']) if row.get('target') == selection['target']]
     else:
         matches = [row.get('buildSettings', row) for row in rows]
-    matches = [row for row in matches if row.get('PRODUCT_TYPE') == 'com.apple.product-type.application'
-               and row.get('CONFIGURATION') == ctx['selection']['configuration']]
+    matches = [row for row in matches if row.get('PRODUCT_TYPE') == 'com.apple.product-type.application']
     if len(matches) != 1:
-        raise RuntimeError('Apple build settings do not establish exactly one app in the selected configuration.')
+        raise RuntimeError('Apple build settings do not establish exactly one app target.')
+    actual = matches[0].get('CONFIGURATION')
+    if actual != ctx['selection']['configuration']:
+        raise RuntimeError('Requested ' + ctx['selection']['configuration'] +
+                           ', but selected scheme resolves to ' + str(actual) + '.')
     fields = ('TARGET_BUILD_DIR','EXECUTABLE_PATH','FULL_PRODUCT_NAME','CONFIGURATION','SYMROOT','OBJROOT','CONFIGURATION_BUILD_DIR')
     ctx['runtime']['apple_settings'] = {key:matches[0][key] for key in fields if key in matches[0]}
     return ctx['runtime']['apple_settings']

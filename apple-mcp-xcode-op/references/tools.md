@@ -1,6 +1,6 @@
 # Tool reference
 
-[README](README.md) · [Tool reference](tools.md) · [Headless mode](headless.md) · [Agent tooling](agent-tooling.md) · [Schemas](schemas.md) · [Changelog](../CHANGELOG.md)
+[README](README.md) · [Tool reference](tools.md) · [Headless mode](headless.md) · [Agent tooling](agent-tooling.md) · [Schemas](schemas.md)
 
 The reference uses `tabIdentifier` for tools that target an Xcode window. In [headless mode](headless.md#headless-mode), those tools use `workspaceIdentifier` instead. Workspace management tools below document their own parameters. See the [schemas](schemas.md#schema) for the tool definitions captured in each mode.
 
@@ -744,7 +744,7 @@ StopProject(tabIdentifier: "...")
 
 Builds and renders a SwiftUI preview, returning a snapshot of the resulting UI. The result identifies which preview was rendered via `displayName` and `sourceLineNumber`, matching the title and "Line N" subtitle in Xcode's canvas, and reports the actual `renderedDestination` (platform, device model, OS version), which may differ from the workspace's selected run destination. In the snapshot at `previewSnapshotPath`, areas of the framebuffer that fall outside the render destination's device screen are transparent.
 
-> **Xcode 27.2 beta:** the render destination can be picked. The result lists `availableRenderDestinations` for the active scheme, and `renderedDestination` gains a required `identifier`; pass one back in `preferredRenderDestination`. Beta 2 turns `supportedCanvasControlOverrides.groupItems` into `{index, title?}` objects and makes `errors` always present. See [Xcode 27.2 beta](../CHANGELOG.md#xcode-272-beta).
+> **Xcode 27.2 beta:** the render destination can be picked. The result lists `availableRenderDestinations` for the active scheme, and `renderedDestination` gains a required `identifier`; pass one back in `preferredRenderDestination`. Beta 2 turns `supportedCanvasControlOverrides.groupItems` into `{index, title?}` objects and makes `errors` always present.
 
 The override parameters are discovery-driven: call the tool once, read `supportedLocalizations`, `supportedPreviewVariantOverrides`, and `supportedCanvasControlOverrides` from the result, then pass values from those back in.
 

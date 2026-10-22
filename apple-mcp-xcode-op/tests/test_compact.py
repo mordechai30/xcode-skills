@@ -127,21 +127,25 @@ class CompactTests(unittest.TestCase):
             self.assertNotIn('launch', saved)
 
     def test_bundled_links_and_heading_anchors(self):
-        """Resolve all installed document links within the package.
-        Supporting documents never link through a reference chain.
+        """Validate operator instructions and their directly linked local documents.
+        Bundled source materials do not impose a fixed document count.
         """
         if not (location / 'SKILL.md').exists():
             self.skipTest('Run against an assembled independent package.')
-        docs = [location / 'SKILL.md', *sorted((location / 'references').glob('*.md'))]
-        self.assertEqual(len(docs), 3)
+        entry = location / 'SKILL.md'
+        links = re.findall(r'\]\(([^)]+)\)', entry.read_text())
+        docs = [entry, *sorted({location / target.split('#')[0] for target in links
+                               if target.split('#')[0].endswith('.md')
+                               and not target.startswith(('http:', 'https:'))})]
         for doc in docs:
             for target in re.findall(r'\]\(([^)]+)\)', doc.read_text()):
-                self.assertFalse(target.startswith(('/', 'http:', 'https:')))
+                if target.startswith(('http:', 'https:')):
+                    continue
+                self.assertFalse(target.startswith('/'))
                 path, _, anchor = target.partition('#')
-                resolved = (location / path).resolve()
+                resolved = (doc.parent / path).resolve()
                 self.assertTrue(resolved.is_relative_to(location.resolve()))
                 self.assertTrue(resolved.is_file())
-                self.assertEqual(doc.name, 'SKILL.md')
                 if anchor:
                     headings = re.findall(r'^#+ (.+)$', resolved.read_text(), re.M)
                     anchors = [re.sub(r'[^\w -]', '', h.lower()).replace(' ', '-') for h in headings]

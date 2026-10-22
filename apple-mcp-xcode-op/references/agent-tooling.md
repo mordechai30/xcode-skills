@@ -1,6 +1,6 @@
 # Agent tooling
 
-[README](README.md) · [Tool reference](tools.md) · [Headless mode](headless.md) · [Agent tooling](agent-tooling.md) · [Schemas](schemas.md) · [Changelog](../CHANGELOG.md)
+[README](README.md) · [Tool reference](tools.md) · [Headless mode](headless.md) · [Agent tooling](agent-tooling.md) · [Schemas](schemas.md)
 
 Around the MCP server Xcode 27 ships a launcher for coding agents, an exporter for its own skills, and a second MCP server for LLDB.
 
