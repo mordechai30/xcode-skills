@@ -1,0 +1,191 @@
+Source: [https://www.mobilebuildmcp.com/docs/storage-management](<https://www.mobilebuildmcp.com/docs/storage-management>)
+
+<a id="storage-management"></a>
+
+# Storage Management
+
+Use the interactive cleaner to review and remove MobileBuildMCP-managed workspace storage when isolated build artifacts, logs, result bundles, or temporary state start taking too much disk space.
+
+Why MobileBuildMCP uses workspace-scoped storage
+
+MobileBuildMCP gives each workspace its own managed storage so parallel agents can safely build and test the same project from different worktrees, branches, or cloned checkouts. This avoids different sessions overwriting each other's DerivedData, result bundles, logs, and temporary runtime state.
+
+The tradeoff is disk usage. Safer parallel isolation can create multiple copies of build artifacts for the same app, so `mobilebuildmcp purge` exists to help you review and clean that storage deliberately.
+
+The normal cleanup path is interactive:
+
+shell
+
+```
+mobilebuildmcp purge
+```
+
+This opens a guided cleaner that shows projects, workspaces, and direct child folders. It keeps the prompt compact, avoids dumping long file lists, and asks for confirmation before deleting anything.
+
+Deletion is explicit
+
+`mobilebuildmcp purge` does not silently clean DerivedData in the background. Interactive cleanup asks before deleting. Destructive non-interactive cleanup requires `--delete`, explicit `--classes`, and the confirmation phrase shown by `--help`.
+
+Some cleanup already happens automatically
+
+MobileBuildMCP already runs conservative lifecycle cleanup for managed logs and managed result bundles. That automatic sweep is narrow: it protects recent files and active helper processes, and it does not delete DerivedData. Use `mobilebuildmcp purge` when you want visibility, explicit cleanup, or DerivedData cleanup.
+
+<a id="when-to-use-it"></a>
+
+## When to use it[#](#when-to-use-it)
+
+Use the cleaner when:
+
+- your disk is filling up after many builds or test runs;
+- you work across many branches, worktrees, or cloned copies of the same app;
+- an agent has created lots of per-workspace build state;
+- you want to inspect MobileBuildMCP-managed storage before removing anything.
+
+If you only need regular build, test, launch, or UI automation commands, you do not need this guide.
+
+<a id="interactive-cleanup-flow"></a>
+
+## Interactive cleanup flow[#](#interactive-cleanup-flow)
+
+Run the command with no mode in a TTY:
+
+shell
+
+```
+mobilebuildmcp purge
+```
+
+The flow starts with the biggest projects and lets you drill down:
+
+1. Pick a project group.
+2. Pick one workspace, multiple workspaces, or the whole group.
+3. Pick folders in one workspace, or delete all folders for selected workspaces.
+4. Review the compact deletion summary.
+5. Confirm or cancel.
+
+DerivedData is shown as a folder choice, but it remains explicit. The cleaner calls it out before confirmation because deleting DerivedData can reclaim a lot of space but also makes later Xcode builds slower until caches are rebuilt.
+
+<a id="what-mobilebuildmcp-stores"></a>
+
+## What MobileBuildMCP stores[#](#what-mobilebuildmcp-stores)
+
+| Storage class | What it contains | Cleanup behavior |
+| --- | --- | --- |
+| `derivedData` | Xcode build products, indexes, module caches, and intermediates for a workspace | Opt-in only. Select it explicitly. |
+| `logs` | MobileBuildMCP-managed build, daemon, and simulator helper logs | Safe default cleanup target. Recent or active logs are protected. |
+| `resultBundles` | Managed `.xcresult` bundles and completion marker files | Safe default cleanup target. Active or incomplete bundles are protected. |
+| `stateTransients` | Stale daemon, OSLog, and Xcode IDE bridge temporary state | Cleaned only when it is safe to identify as stale. |
+
+The `locks` directory can appear in reports, but purge does not delete it as a storage class.
+
+<a id="scriptable-report-mode"></a>
+
+## Scriptable report mode[#](#scriptable-report-mode)
+
+Use report mode when you want details for a script, CI diagnostic, or issue report.
+
+shell
+
+```
+mobilebuildmcp purge --report
+```
+
+For machine-readable output:
+
+shell
+
+```
+mobilebuildmcp purge --report --json
+```
+
+A bare report covers all known workspaces so you can see where space is going. Reports include total usage, workspace usage, family usage, and storage-class usage for the selected scope.
+
+<a id="scriptable-dry-run-mode"></a>
+
+## Scriptable dry-run mode[#](#scriptable-dry-run-mode)
+
+Dry-run mode builds the deletion plan without removing files.
+
+shell
+
+```
+mobilebuildmcp purge --dry-run --scope current --classes logs,resultBundles,stateTransients
+```
+
+Without an explicit scope, dry-run and delete target the current workspace. This keeps cleanup narrow by default.
+
+To include DerivedData, name it directly:
+
+shell
+
+```
+mobilebuildmcp purge --dry-run --scope current --classes derivedData --older-than 7d
+```
+
+`--older-than` accepts day values such as `1d`, `7d`, `14d`, or `30d`. The age check uses the newest file or directory inside a candidate, so a directory with fresh contents is not selected just because the directory itself looks old.
+
+<a id="scriptable-delete-mode"></a>
+
+## Scriptable delete mode[#](#scriptable-delete-mode)
+
+Use non-interactive delete mode only when you already know the scope and classes you want to remove.
+
+shell
+
+```
+mobilebuildmcp purge --delete \
+  --scope current \
+  --classes logs,resultBundles,stateTransients \
+  --confirm delete-mobilebuildmcp-storage
+```
+
+For DerivedData cleanup, keep the selection explicit:
+
+shell
+
+```
+mobilebuildmcp purge --delete \
+  --scope current \
+  --classes derivedData \
+  --older-than 14d \
+  --confirm delete-mobilebuildmcp-storage
+```
+
+During deletion, MobileBuildMCP revalidates every candidate under the workspace filesystem lock. If a path changed since planning, moved outside the expected workspace folder, contains a symbolic link, belongs to an active helper process, or no longer matches the managed artifact pattern, it is skipped instead of deleted.
+
+<a id="scope-options"></a>
+
+## Scope options[#](#scope-options)
+
+| Scope | Meaning |
+| --- | --- |
+| `--scope current` | Current workspace. Best default for manual cleanup. |
+| `--scope workspace --workspace-key <key>` | One explicit workspace key. |
+| `--scope family --family <name>` | All recognized workspaces with the same project basename prefix. |
+| `--scope all` | Every recognized workspace on the machine. Use with care. |
+
+Unknown workspace keys appear in reports, but broad `all` and `family` purge scopes skip them. Use explicit workspace scope if you need to clean one.
+
+<a id="managing-deriveddata-intentionally"></a>
+
+## Managing DerivedData intentionally[#](#managing-deriveddata-intentionally)
+
+By default, builds use isolated DerivedData under MobileBuildMCP-managed workspace storage. This avoids cross-project and cross-worktree build conflicts, especially when multiple agents build at the same time.
+
+If you intentionally want to manage DerivedData elsewhere, set `sessionDefaults.derivedDataPath` in your project config. That moves Xcode's build products to the path you provide, so you are then responsible for its cleanup policy.
+
+yaml
+
+```
+schemaVersion: 1
+sessionDefaults:
+  derivedDataPath: ./.derivedData
+```
+
+See [Session Defaults](https://www.mobilebuildmcp.com/docs/session-defaults) for the full config model.
+
+[← Previous
+
+Troubleshooting](https://www.mobilebuildmcp.com/docs/troubleshooting)[Next →
+
+Changelog](https://www.mobilebuildmcp.com/docs/changelog)

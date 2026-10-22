@@ -1,0 +1,206 @@
+Source: [https://www.mobilebuildmcp.com/docs/troubleshooting](<https://www.mobilebuildmcp.com/docs/troubleshooting>)
+
+<a id="troubleshooting"></a>
+
+# Troubleshooting
+
+The problems people actually hit, with the fixes that actually work.
+
+<a id="quick-triage"></a>
+
+## Quick triage[#](#quick-triage)
+
+- Run the doctor and include its output when filing issues.
+- Confirm Xcode and Command Line Tools are installed.
+- Verify the required workflows are enabled in your config.
+- Check simulator and device availability + permissions.
+
+<a id="run-the-doctor"></a>
+
+## Run the doctor[#](#run-the-doctor)
+
+The doctor checks system configuration and reports dependency/capability status for key MobileBuildMCP workflows and runtime features.
+
+shell
+
+```
+npx --package mobilebuildmcp@latest mobilebuildmcp-doctor
+```
+
+Or, if you installed globally:
+
+shell
+
+```
+mobilebuildmcp-doctor
+```
+
+It reports on:
+
+- System and Node.js environment
+- Xcode installation and configuration
+- Dependency and capability status (xcodebuild, UI automation binary, debugger backend)
+- Environment variables affecting MobileBuildMCP
+- Feature availability status
+
+Agent-driven doctor
+
+You can also ask your agent to call the `doctor` tool. It returns a more representative report because it runs inside the MCP session and sees the exact server environment.
+
+<a id="ui-automation-is-unavailable"></a>
+
+## UI automation is unavailable[#](#ui-automation-is-unavailable)
+
+UI automation (`tap`, `swipe`, `type_text`, `snapshot_ui`) and simulator video capture rely on the bundled AXe helper. In the CLI these tools use kebab-case names such as `type-text` and `snapshot-ui`. If the doctor reports the helper as missing:
+
+- Confirm `bundled/` artifacts exist in your install. If not, reinstall MobileBuildMCP.
+- If you need to point at a custom binary, set `axePath` in `.mobilebuildmcp/config.yaml` (or the `MOBILEBUILDMCP_AXE_PATH` env var). See [Environment Variables](https://www.mobilebuildmcp.com/docs/env-vars).
+- Re-run the doctor to confirm detection.
+
+<a id="tool-timeouts"></a>
+
+## Tool timeouts[#](#tool-timeouts)
+
+Some MCP clients have short tool timeouts. If you see `timed out awaiting tools/call after 60s`, `timed out awaiting tools/call after 120s`, or similar in Codex, set the timeout inside the MobileBuildMCP server block:
+
+toml
+
+```
+# ~/.codex/config.toml
+[mcp_servers.MobileBuildMCP]
+command = "npx"
+args = ["-y", "mobilebuildmcp@latest", "mcp"]
+tool_timeout_sec = 600
+```
+
+A top-level `tool_timeout_sec = 600` is ignored by Codex for MCP tool calls.
+
+Claude Code and Cursor don't surface tool timeouts directly, but you can extend the daemon startup timeout with:
+
+shell
+
+```
+export MOBILEBUILDMCP_STARTUP_TIMEOUT_MS=10000
+```
+
+<a id="missing-tools"></a>
+
+## Missing tools[#](#missing-tools)
+
+If tools don't appear, your client is probably running with the default `simulator` workflow only. Expand:
+
+yaml
+
+```
+# .mobilebuildmcp/config.yaml
+enabledWorkflows: ["simulator", "device", "debugging", "ui-automation"]
+```
+
+Or via env in your MCP client config:
+
+json
+
+```
+{
+  "env": { "MOBILEBUILDMCP_ENABLED_WORKFLOWS": "simulator,device,debugging,ui-automation" }
+}
+```
+
+See [Workflows](https://www.mobilebuildmcp.com/docs/workflows) for the full list.
+
+<a id="server-doesnt-start-in-codex-agent-or-xcode-agent"></a>
+
+## Server doesn't start in Codex Agent or Xcode agent[#](#server-doesnt-start-in-codex-agent-or-xcode-agent)
+
+Agents running inside Xcode start with a minimal `PATH`. If `npx` can't be found, wrap the command with `zsh -lc` and prepend a known-good `PATH`:
+
+toml
+
+```
+[mcp_servers.MobileBuildMCP]
+args = [
+  "-lc",
+  "PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin; export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\"; nvm use --silent >/dev/null 2>&1 || true; npx -y mobilebuildmcp@latest mcp"
+]
+command = "/bin/zsh"
+enabled = true
+tool_timeout_sec = 10000
+```
+
+See the [Xcode (Codex Agent) client config](https://www.mobilebuildmcp.com/docs/clients#xcode-codex-agent) for the complete version.
+
+<a id="device-build-fails-with-no-signing-certificate-found"></a>
+
+## Device build fails with "No signing certificate found"[#](#device-build-fails-with-no-signing-certificate-found)
+
+This is always a signing misconfiguration. MobileBuildMCP can't fix it; Xcode has to. Open the project in Xcode, enable automatic signing, pick a development team, and try again. See [Device Code Signing](https://www.mobilebuildmcp.com/docs/device-signing).
+
+<a id="simulator-is-booted-but-nothing-launches"></a>
+
+## Simulator is "booted" but nothing launches[#](#simulator-is-booted-but-nothing-launches)
+
+A stale simulator is the most common culprit:
+
+shell
+
+```
+xcrun simctl shutdown all
+# wait ~5 seconds, then retry your tool
+```
+
+If it persists, erase the simulator and reboot:
+
+shell
+
+```
+xcrun simctl erase <UDID>
+mobilebuildmcp simulator boot --simulator-id <UDID>
+```
+
+<a id="daemon-wont-start"></a>
+
+## Daemon won't start[#](#daemon-wont-start)
+
+shell
+
+```
+# Check for stale sockets
+mobilebuildmcp daemon list
+
+# Force restart
+mobilebuildmcp daemon restart
+
+# Run in the foreground to see logs
+mobilebuildmcp daemon start --foreground
+```
+
+<a id="socket-permission-errors"></a>
+
+## Socket permission errors[#](#socket-permission-errors)
+
+shell
+
+```
+chmod 700 ~/.mobilebuildmcp
+chmod -R 700 ~/.mobilebuildmcp/daemons
+```
+
+<a id="still-stuck"></a>
+
+## Still stuck?[#](#still-stuck)
+
+Open an issue at [getsentry/MobileBuildMCP/issues](https://github.com/getsentry/MobileBuildMCP/issues) with your doctor output and a short reproduction. The more surface area the team sees, the faster the fix.
+
+<a id="related"></a>
+
+## Related[#](#related)
+
+- [Configuration](https://www.mobilebuildmcp.com/docs/configuration)
+- [Privacy](https://www.mobilebuildmcp.com/docs/privacy)
+- [Tools Reference](https://www.mobilebuildmcp.com/docs/tools)
+
+[← Previous
+
+Privacy & Telemetry](https://www.mobilebuildmcp.com/docs/privacy)[Next →
+
+Storage Management](https://www.mobilebuildmcp.com/docs/storage-management)
